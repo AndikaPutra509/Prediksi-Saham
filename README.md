@@ -1,1247 +1,1826 @@
-!pip install ta
+# -*- coding: utf-8 -*-
+"""IDX_Portfolio_Recommender_DUAL_ENGINE_FINAL.ipynb
+
+# 📈 IDX PORTFOLIO RECOMMENDER - DUAL ENGINE FINAL
+## Fitur Lengkap:
+## ✅ Swing Engine (Mean Reversion) + Intraday Engine
+## ✅ Fee Realism + Random Slippage
+## ✅ Monte Carlo Simulation
+## ✅ Sektor Filter + Ranking System
+## ✅ Entry Delay + Bounce Confirmation
+## ✅ MA200 Trend Filter + ATR Stop Loss
+## ✅ Backtest 5 Tahun Opsional (2-3 jam)
+## 
+## ✅ AMAN:
+## - Live trading tetap cepat (60-90 detik)
+## - Backtest 5 tahun hanya jika diminta
+## - Ranking system (EV > 2%, ambil top score)
+## - Semua filter sudah teruji
+"""
+
+# =============================================================================
+# 1. INSTALL DEPENDENCIES
+# =============================================================================
+
+!pip install yfinance pandas numpy ta tabulate -q
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import ta
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    f1_score,
-    balanced_accuracy_score,
-    accuracy_score,
-)
-from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler
-from sklearn.calibration import CalibratedClassifierCV
+import warnings
+from datetime import datetime, timedelta
+import time
+import math
+import pickle
+import os
+from tabulate import tabulate
+from collections import defaultdict
+import logging
+import matplotlib.pyplot as plt
+import random
 
-SEED = 42
-np.random.seed(SEED)
+# Matikan semua logging
+logging.getLogger('yfinance').setLevel(logging.CRITICAL)
+warnings.filterwarnings('ignore')
 
-# Pilih mode: "harian" (intraday/hourly) atau "mingguan" (daily swing)
-TRADING_MODE = "mingguan"
+print("✅ Dependencies installed")
 
-SYMBOL = "WMUU.JK"
-INTERVAL = "1h"
-START = "2013-01-01"
-END = "2026-02-28"
-INTRADAY_PERIOD = "365d"
-INTRADAY_FALLBACK_PERIODS = ["365d", "180d", "90d", "60d", "30d", "10d", "5d", "3d"]
-TRAIN_RATIO = 0.7
-VAL_RATIO = 0.15
-HOLD_BAND = 0.05
-TARGET_MODE = "three_class"  # "binary" atau "three_class"
-RETURN_THRESHOLD = 0.01
-USE_PROB_CALIBRATION = True
-MIN_ROWS_AFTER_FEATURES = 40
-MIN_ROWS_INTRADAY = 18
-MIN_RAW_ROWS_FOR_FEATURES = 20
-AS_OF_DATE = None  # contoh: "2026-02-18" atau "2026-02-18 15:00:00"
-IHSG_TICKER = "^JKSE"
-INDO_VIX_CANDIDATES = ["^JKVIX", "JKVIX", "VIX.JK", "^VIX", "VIX"]
-GLOBAL_INDEX_TICKERS = {
-    "SP500": "^GSPC",
-    "NASDAQ": "^IXIC",
-    "DOWJONES": "^DJI",
-    "NIKKEI": "^N225",
-    "SHANGHAI": "000001.SS",
+# =============================================================================
+# 2. STOCKBIT UNIVERSE (FULL)
+# =============================================================================
+
+STOCKBIT_UNIVERSE = [
+    "AALI", "ABBA", "ABDA", "ABMM", "ACES", "ADES", "ADHI", "ADMF", "ADMG", "ADRO",
+    "AGAR", "AGII", "AGRO", "AHAP", "AIMS", "AISA", "AKRA", "AKSI", "ALDO", "ALKA",
+    "ALMI", "AMAG", "AMFG", "AMMN", "AMRT", "ANDI", "ANJT", "ANTM", "APEX", "APIC",
+    "APLN", "ARCI", "ARGO", "ARII", "ARNA", "ARTA", "ARTO", "ASBI", "ASDM", "ASGR",
+    "ASHA", "ASII", "ASLI", "ASMI", "ASPI", "ASRI", "ASRM", "ASSA", "ATLA", "AUTO",
+    "AVIA", "AWAN", "AYLS", "BABP", "BACA", "BALI", "BANK", "BAPA", "BAPI", "BATA",
+    "BAYU", "BBCA", "BBHI", "BBKP", "BBLD", "BBNI", "BBRI", "BBRM", "BBSS", "BBTN",
+    "BBYB", "BCAP", "BCIC", "BDMN", "BEEF", "BEKS", "BELL", "BEST", "BFIN", "BGTG",
+    "BHAT", "BIMA", "BINA", "BIPP", "BIPI", "BIRD", "BISI", "BJBR", "BJTM", "BKSL",
+    "BLTA", "BLUE", "BMAS", "BMBL", "BMRI", "BMSR", "BMTR", "BNBA", "BNBR", "BNGA",
+    "BNII", "BNLI", "BOBA", "BOLT", "BOSS", "BPFI", "BPII", "BPTR", "BRAM", "BREN",
+    "BRIS", "BRMS", "BRNA", "BRPT", "BSDE", "BSIM", "BSSR", "BTEL", "BTON", "BTPN",
+    "BTPS", "BUDI", "BULL", "BUMI", "BUVA", "BWPT", "BYAN", "CAMP", "CANI", "CARS",
+    "CASA", "CASS", "CBDK", "CBMF", "CCSI", "CDAX", "CEKA", "CENT", "CFIN", "CITA",
+    "CITY", "CKRA", "CLEO", "CLPI", "CMNP", "CMPP", "CMRY", "CNKO", "CNTX", "COAL",
+    "COCO", "COWL", "CPIN", "CPRO", "CSAP", "CSIS", "CTBN", "CTRA", "CTTH", "CUAN",
+    "DAAZ", "DART", "DASA", "DAYA", "DCII", "DEGA", "DEWA", "DFAM", "DGIK", "DIGI",
+    "DILD", "DIVA", "DIVN", "DKFT", "DLTA", "DMAS", "DMND", "DNAR", "DNET", "DNLS",
+    "DOID", "DOOH", "DPNS", "DPUM", "DSFI", "DSNG", "DSSA", "DUCK", "DUTI", "DVLA",
+    "DYAN", "EASI", "EASY", "EBMT", "ECII", "EDGE", "EKAD", "ELBA", "ELSA", "ELTY",
+    "EMBR", "EMDE", "EMTK", "ENRG", "ENVY", "ENZO", "EPAC", "EPMT", "ERAA", "ERTX",
+    "ESSA", "ESTA", "ESTI", "ETWA", "EXCL", "FAST", "FASW", "FILM", "FISH", "FITT",
+    "FKSF", "FLMC", "FMII", "FORE", "FORU", "FORZ", "FPNI", "FREN", "FUJI", "FUTR",
+    "GAMA", "GDST", "GDYR", "GEMS", "GGRM", "GGRP", "GHON", "GIDS", "GJTL", "GLVA",
+    "GMFI", "GMTD", "GOLD", "GOOD", "GOTO", "GPRA", "GRPH", "GSMF", "GTBO", "GTRA",
+    "GTSI", "GULA", "GZCO", "HADE", "HDFA", "HDIT", "HEAL", "HERO", "HITS", "HKMU",
+    "HMSP", "HOKI", "HOMI", "HOPE", "HOTL", "HRME", "HRTA", "HRUM", "HSBK", "HSMP",
+    "HUMI", "IBFN", "IBOS", "IBST", "ICBP", "ICON", "IDPR", "IFII", "IFSH", "IGAR",
+    "IIKP", "IKAI", "IKAN", "IMAS", "IMJS", "IMPC", "INAF", "INAI", "INCF", "INCI",
+    "INCO", "INDF", "INDS", "INDX", "INDY", "INET", "INKP", "INPC", "INPP", "INPS",
+    "INRU", "INTA", "INTD", "INTP", "IPCC", "IPCM", "IPOL", "IRRA", "ISAT", "ISEA",
+    "ISSP", "ITIC", "ITMG", "JAST", "JAWA", "JAYA", "JECC", "JEMB", "JFAS", "JGLE",
+    "JHON", "JIHD", "JKON", "JKSW", "JMAS", "JPFA", "JPII", "JPUR", "JRPT", "JSKY",
+    "JSMR", "JSPT", "JTNB", "KAEF", "KAQI", "KARW", "KBLI", "KBLM", "KBRT", "KBRI",
+    "KDSI", "KDTN", "KEEN", "KETR", "KICI", "KIJA", "KINO", "KIOS", "KJEN", "KKGI",
+    "KLBF", "KMTR", "KOBX", "KOIN", "KOLI", "KONI", "KOTA", "KPAL", "KPIG", "KRAS",
+    "KREN", "KRYA", "KSEL", "KUAS", "KUIC", "KUVO", "LAND", "LAPD", "LATA", "LBAK",
+    "LCGP", "LCKM", "LEAD", "LIFE", "LINK", "LION", "LISA", "LMAS", "LMPI", "LMSH",
+    "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF", "LPPS", "LSIP", "LSPI", "LTLS",
+    "LUCY", "MABA", "MABH", "MAGP", "MAIN", "MAMI", "MAPA", "MAPB", "MAPI", "MARA",
+    "MASA", "MAYA", "MBAP", "MBCA", "MBMA", "MBSS", "MBTO", "MCAS", "MCPI", "MCOR",
+    "MDIA", "MDKA", "MDKI", "MEDC", "MEDS", "MEGA", "MERK", "META", "MFIN", "MFMI",
+    "MGLV", "MGNA", "MGRO", "MIDI", "MIKA", "MINA", "MIRA", "MITI", "MITT", "MKNT",
+    "MKPI", "MLBI", "MLIA", "MLPL", "MLPT", "MLSL", "MMIX", "MMLP", "MNCN", "MOLI",
+    "MPOW", "MPPA", "MPRO", "MPTJ", "MRAT", "MSIE", "MSIN", "MSKY", "MTDL", "MTFN",
+    "MTLA", "MTPS", "MTSM", "MUDA", "MUTU", "MYOH", "MYOR", "MYRX", "MYSX", "NAGA",
+    "NASI", "NATO", "NAYZ", "NCKL", "NELY", "NETV", "NFCX", "NICL", "NIKL", "NISP",
+    "NITY", "NIYM", "NOBU", "NPGF", "NRCA", "NSSS", "NTBK", "NUSA", "NUSI", "OASA",
+    "OCTN", "OKAS", "OMED", "ONIX", "OPMS", "ORNA", "OTBK", "PADA", "PADI", "PAMG",
+    "PANR", "PANS", "PANU", "PAPA", "PASA", "PASS", "PBRX", "PBID", "PBSA", "PCAR",
+    "PDES", "PDGD", "PDIN", "PEGE", "PGAS", "PGLI", "PGUN", "PICO", "PIDRA", "PJAA",
+    "PKPK", "PLAN", "PLAS", "PLIN", "PMJS", "PMMP", "PNBN", "PNBS", "PNIN", "PNLF",
+    "PNSE", "POLI", "POLL", "POLU", "POLY", "POOL", "PORT", "POWR", "PPGL", "PPRE",
+    "PPRO", "PPSI", "PRAS", "PRDA", "PRIM", "PRIN", "PRLD", "PROD", "PROT", "PRTS",
+    "PSAB", "PSBA", "PSDN", "PSGO", "PSKT", "PSSI", "PTBA", "PTDU", "PTIS", "PTMP",
+    "PTPP", "PTPW", "PTRO", "PTSN", "PTSP", "PUDP", "PURA", "PURE", "PWON", "PYFA",
+    "RACE", "RADIO", "RAFI", "RAJA", "RAKD", "RALS", "RANC", "RATU", "RBMS", "RDTX",
+    "REAL", "RELI", "RIGS", "RIMO", "RISE", "RMBA", "RMKE", "ROCK", "RODA", "ROKI",
+    "ROTI", "RRMI", "RUIS", "RUMI", "SABA", "SAFE", "SAME", "SAPX", "SARA", "SATO",
+    "SBAT", "SBBP", "SBGA", "SBMA", "SBMF", "SCBD", "SCCC", "SCCO", "SCMA", "SCNP",
+    "SDPC", "SDRA", "SEAN", "SECR", "SEMA", "SFAN", "SGER", "SGRO", "SHID", "SHIP",
+    "SIDO", "SILO", "SIMA", "SIMP", "SIPD", "SIPO", "SKBM", "SKLT", "SKRN", "SLIS",
+    "SMAR", "SMDR", "SMGR", "SMIL", "SMMT", "SMSM", "SMRA", "SNLK", "SNMS", "SOFA",
+    "SONA", "SOSS", "SOUL", "SPMA", "SPMI", "SPNA", "SPRE", "SPTO", "SQBI", "SQMI",
+    "SRAJ", "SRIL", "SRSN", "SSIA", "SSMS", "SSTM", "STAR", "STTP", "SUGI", "SULI",
+    "SUPR", "SURI", "SWAT", "SWID", "TALD", "TAMA", "TAMU", "TAPG", "TARA", "TASP",
+    "TATA", "TAXI", "TBIG", "TBLA", "TCID", "TDPM", "TELE", "TEMB", "TEMPO", "TIFA",
+    "TIGA", "TINS", "TIRA", "TIRT", "TITA", "TKGA", "TKIM", "TLKM", "TMAS", "TMPO",
+    "TMSH", "TOBA", "TOOL", "TOPS", "TOSK", "TOTL", "TOTO", "TOWR", "TPIA", "TPMA",
+    "TRAM", "TRGU", "TRIO", "TRIS", "TRJA", "TRON", "TRST", "TRUB", "TRUK", "TRUS",
+    "TSPC", "TUGU", "TURI", "TUVN", "TYRE", "UANG", "UCID", "UDIJ", "UFNX", "UGRO",
+    "UJSN", "ULTJ", "UNIC", "UNIQ", "UNIT", "UNSP", "UNTR", "UNVR", "USFI", "VALU",
+    "VICO", "VICI", "VIDI", "VISI", "VIVA", "VKTR", "VOKS", "VRNA", "VTNY", "WAPO",
+    "WEGE", "WEHA", "WICO", "WIFI", "WIIM", "WIKA", "WINS", "WMUU", "WMPP", "WOOD",
+    "WOWS", "WRKR", "WSBP", "WSKT", "WTON", "YELO", "YULE", "ZBRA", "ZINC", "ZONE"
+]
+
+print(f"✅ Universe: {len(STOCKBIT_UNIVERSE)} stocks")
+
+# =============================================================================
+# 3. SEKTOR MAPPING
+# =============================================================================
+
+ENERGY_SECTOR = ['ADRO', 'PTBA', 'ITMG', 'MEDC', 'PGAS', 'ENRG', 'BUMI', 'DOID']
+MINING_GOLD = ['ANTM', 'MDKA', 'BRMS']
+EXPORT_SECTOR = ['ANTM', 'INCO', 'TINS', 'HRUM', 'CPIN', 'JPFA', 'MAIN']
+
+SECTOR_MAPPING = {
+    'ENERGY': ENERGY_SECTOR + ['BYAN', 'INDY', 'HRUM', 'ARTI'],
+    'MINING': MINING_GOLD + ['INCO', 'TINS', 'CITA', 'DKFT'],
+    'FINANCE': ['BBCA', 'BBRI', 'BMRI', 'BBNI', 'PNBN', 'BJBR', 'BJTM', 'NISP', 'BDMN', 'BNLI', 'BNGA', 'BNII', 'BSIM'],
+    'PROPERTY': ['PWON', 'BSDE', 'LPKR', 'CTRA', 'SMRA', 'ASRI', 'DILD', 'MDLN', 'ELTY', 'BIPP', 'BKSL', 'MTLA', 'MAPI'],
+    'CONSUMER': ['UNVR', 'ICBP', 'INDF', 'GGRM', 'HMSP', 'KLBF', 'MYOR', 'SIDO', 'ULTJ', 'DLTA', 'MLBI', 'TCID', 'ROTI', 'SKBM'],
+    'INFRASTRUCTURE': ['TLKM', 'JSMR', 'TOWR', 'TBIG', 'WIKA', 'PTPP', 'WSKT', 'ADHI', 'TOTL', 'ACST'],
+    'INDUSTRIAL': ['ASII', 'GJTL', 'AUTO', 'BRAM', 'INDS', 'BOLT', 'IMP', 'PRAS', 'PBRX'],
+    'TRADE': ['MAPI', 'ACES', 'RALS', 'LPPF', 'ERAA', 'MAPB', 'SONA', 'CSAP', 'MIDI', 'MFMI'],
+    'AGRICULTURE': ['AALI', 'LSIP', 'SGRO', 'BWPT', 'SMAR', 'DSNG', 'JAWA'],
+    'HEALTHCARE': ['MIKA', 'SILO', 'KLBF', 'KAEF', 'INAF', 'DVLA', 'TSPC', 'MERK', 'SCPI']
 }
-COMMODITY_TICKERS = {
-    "OIL": "CL=F",
-    "GOLD": "GC=F",
-}
-VIX_SPIKE_THRESHOLD = 0.04  # lonjakan 1-periode (4%) dianggap fear naik
-VIX_HIGH_LEVEL = 25.0
-USDIDR_TICKER = "IDR=X"
-JKT_TZ = "Asia/Jakarta"
-SESSION1_START = "09:00:00"
-SESSION1_END = "12:00:00"
-SESSION2_START = "13:30:00"
-SESSION2_END = "16:00:00"
-SR_LOOKBACK_DAILY = 20
-SR_LOOKBACK_INTRADAY = 8
 
-def resolve_trading_mode(mode: str) -> dict:
-    normalized = str(mode).strip().lower()
-    if normalized not in {"harian", "mingguan"}:
-        raise ValueError('TRADING_MODE harus "harian" atau "mingguan".')
-    if normalized == "harian":
-        return {
-            "name": "harian",
-            "interval": "1h",
-            "forecast_periods": 24,
-            "forecast_label": "Prediksi harga 24 jam ke depan (hourly)",
-            "horizon_note": "intraday/day-trading",
-        }
-    return {
-        "name": "mingguan",
-        "interval": "1d",
-        "forecast_periods": 5,
-        "forecast_label": "Prediksi harga 1 minggu ke depan (5 hari bursa)",
-        "horizon_note": "weekly swing-trading",
-    }
+def get_sector(symbol):
+    for sector, stocks in SECTOR_MAPPING.items():
+        if symbol in stocks:
+            return sector
+    return 'OTHER'
+
+# =============================================================================
+# 4. FEE CONFIGURATION
+# =============================================================================
+
+class FeeConfig:
+    """Konfigurasi fee dan biaya transaksi"""
     
-def get_runtime_mode_config() -> dict:
-    """Mode dikunci ke mingguan: trading mingguan dengan data train harian (1d)."""
-    return resolve_trading_mode("mingguan")
+    BROKER_FEE_BUY = 0.0015  # 0.15%
+    BROKER_FEE_SELL = 0.0025  # 0.25% (termasuk pajak)
+    EXCHANGE_FEE = 0.0001     # 0.01%
+    
+    SLIPPAGE_BUY_MIN = 0.0005  # 0.05%
+    SLIPPAGE_BUY_MAX = 0.002   # 0.2%
+    SLIPPAGE_SELL_MIN = 0.001  # 0.1%
+    SLIPPAGE_SELL_MAX = 0.003  # 0.3%
+    
+    SLIPPAGE_MODE = 'random'
+    MIN_FEE = 0
+    
+    @classmethod
+    def get_slippage_buy(cls):
+        if cls.SLIPPAGE_MODE == 'random':
+            return random.uniform(cls.SLIPPAGE_BUY_MIN, cls.SLIPPAGE_BUY_MAX)
+        else:
+            return 0.001
+    
+    @classmethod
+    def get_slippage_sell(cls):
+        if cls.SLIPPAGE_MODE == 'random':
+            return random.uniform(cls.SLIPPAGE_SELL_MIN, cls.SLIPPAGE_SELL_MAX)
+        else:
+            return 0.002
+    
+    @classmethod
+    def calculate_buy_cost(cls, amount):
+        broker = amount * cls.BROKER_FEE_BUY
+        exchange = amount * cls.EXCHANGE_FEE
+        slippage = amount * cls.get_slippage_buy()
+        total = broker + exchange + slippage
+        return max(total, cls.MIN_FEE)
+    
+    @classmethod
+    def calculate_sell_cost(cls, amount):
+        broker = amount * cls.BROKER_FEE_SELL
+        exchange = amount * cls.EXCHANGE_FEE
+        slippage = amount * cls.get_slippage_sell()
+        total = broker + exchange + slippage
+        return max(total, cls.MIN_FEE)
+    
+    @classmethod
+    def calculate_round_trip_cost(cls, buy_amount, sell_amount):
+        buy_cost = cls.calculate_buy_cost(buy_amount)
+        sell_cost = cls.calculate_sell_cost(sell_amount)
+        return buy_cost + sell_cost
+    
+    @classmethod
+    def adjust_return_for_fee(cls, entry_price, exit_price, lot=1):
+        buy_amount = entry_price * 100 * lot
+        sell_amount = exit_price * 100 * lot
+        total_cost = cls.calculate_round_trip_cost(buy_amount, sell_amount)
+        net_profit = (sell_amount - buy_amount) - total_cost
+        net_return_pct = (net_profit / buy_amount) * 100
+        return net_return_pct, total_cost
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+# =============================================================================
+# 5. GLOBAL INDICES CONFIGURATION
+# =============================================================================
+
+GLOBAL_INDICES = {
+    "IHSG": "^JKSE",
+    "DOWJONES": "^DJI",
+    "USDIDR": "IDR=X",
+    "OIL": "CL=F",
+    "GOLD": "GC=F"
+}
+
+# =============================================================================
+# 6. KONFIGURASI DASAR (FILTER KETAT)
+# =============================================================================
+
+class Config:
+    def __init__(self, modal, mode):
+        self.MODAL = modal
+        self.MODE = mode
+        
+        # FILTER KETAT
+        self.MIN_PRICE = 100
+        self.MAX_PRICE = 50000
+        self.MIN_VOLUME = 50000
+        self.MAX_SPREAD_PCT = 2.0
+        self.MIN_AVG_VOLUME = 500000
+        self.MIN_RR = 1.0
+        self.MAX_PORTFOLIO_RISK_PCT = 3.0
+        self.MIN_EV_PCT = 2.0
+        
+        self.ENABLE_SECTOR_FILTER = True
+        self.ENABLE_ENTRY_DELAY = True
+        self.MAX_ENTRY_DELAY = 2
+        self.ENTRY_DELAY_PROB = [0.5, 0.3, 0.2]
+        self.ENABLE_RANDOM_SLIPPAGE = True
+        
+        if mode == 'intraday':
+            self.INTERVAL = "1h"
+            self.PERIOD = "1mo"  # Live trading cukup 1 bulan
+            self.MIN_HISTORY = 30
+            self.SESSION1_START = "09:00:00"
+            self.SESSION1_END = "12:00:00"
+            self.SESSION2_START = "14:00:00"
+            self.SESSION2_END = "16:00:00"
+            self.JKT_TZ = "Asia/Jakarta"
+            
+            self.BREAKOUT_PERIOD = 10
+            self.VOLUME_BREAKOUT = 1.2
+            self.MA_SHORT = 20
+            self.MA_LONG = 50
+            self.ATR_PERIOD = 14
+            self.TP_MULTIPLIER = 1.2
+            self.SL_MULTIPLIER = 0.8
+            self.RISK_PER_TRADE_PCT = 0.5
+            self.MAX_TRADES_PER_DAY = 3
+            self.FORCE_CLOSE_HOUR = 15
+            self.FORCE_CLOSE_MINUTE = 50
+            
+        else:  # mingguan
+            self.INTERVAL = "1d"
+            self.PERIOD = "6mo"  # Live trading cukup 6 bulan
+            self.MIN_HISTORY = 60
+            
+            self.RSI_PERIOD = 14
+            self.MA_SHORT = 20
+            self.MA_LONG = 50
+            self.MA200_PERIOD = 200
+            self.SUPPORT_PERIOD = 60
+            self.ATR_PERIOD = 14
+            self.SL_MULTIPLIER = 1.5
+            self.TP_MULTIPLIER = 2.5
+            self.BASE_THRESHOLD = 5
+            self.VOLUME_BOOST = 1.5
+        
+        if modal < 100000:
+            self.MAX_POSITION_PCT = 0.30
+            self.MAX_PORTFOLIO = 2
+            self.MIN_PRICE = 100
+        elif modal < 500000:
+            self.MAX_POSITION_PCT = 0.25
+            self.MAX_PORTFOLIO = 3
+            self.MIN_PRICE = 100
+        else:
+            self.MAX_POSITION_PCT = 0.20
+            self.MAX_PORTFOLIO = 4
+            self.MIN_PRICE = 100
+
+# =============================================================================
+# 7. GLOBAL INDICES FETCHER
+# =============================================================================
+
+class GlobalIndicesFetcher:
+    def __init__(self):
+        self.data = {}
+        self.momentum = {}
+        self.status = {}
+        self.prices = {}
+        
+    def _to_scalar(self, value):
+        if value is None:
+            return 0.0
+        if isinstance(value, (np.ndarray, list)):
+            if len(value) > 0:
+                return float(value[0])
+            return 0.0
+        return float(value)
+        
+    def fetch_all(self, config):
+        print("\n📡 Fetching global indices...")
+        
+        end_date = datetime.now()
+        days = 365 * 2  # 2 tahun untuk MA200
+        start_date = end_date - timedelta(days=days)
+        
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+        
+        for name, ticker in GLOBAL_INDICES.items():
+            try:
+                df = yf.download(
+                    ticker, 
+                    start=start_str,
+                    end=end_str,
+                    interval="1d",
+                    auto_adjust=True, 
+                    progress=False, 
+                    timeout=10
+                )
+                
+                time.sleep(1)
+                
+                if df.empty or len(df) < 200:
+                    self.status[name] = "UNAVAILABLE"
+                    self.momentum[name] = 0.0
+                    self.prices[name] = 0.0
+                else:
+                    close = df['Close'].values
+                    current_price = float(close[-1])
+                    
+                    if len(close) >= 5:
+                        momentum_array = (close[-1] / close[-5] - 1) * 100
+                        momentum_value = self._to_scalar(momentum_array)
+                    else:
+                        momentum_value = 0.0
+                    
+                    if name == "IHSG" and len(close) >= 200:
+                        ma200 = np.mean(close[-200:])
+                        self.data['IHSG_MA200'] = ma200
+                        self.data['IHSG_Close'] = current_price
+                    
+                    self.data[name] = df
+                    self.momentum[name] = round(momentum_value, 2)
+                    self.prices[name] = round(current_price, 2)
+                    self.status[name] = "OK"
+                    
+            except Exception:
+                self.status[name] = "ERROR"
+                self.momentum[name] = 0.0
+                self.prices[name] = 0.0
+                time.sleep(1)
+        
+        print(f"   ✅ Global indices ready")
+    
+    def get_momentum(self, name):
+        return self.momentum.get(name, 0.0)
+    
+    def get_price(self, name):
+        return self.prices.get(name, 0.0)
+    
+    def get_price_str(self, name):
+        price = self.get_price(name)
+        if price == 0:
+            return "N/A"
+        
+        if name in ["IHSG", "DOWJONES"]:
+            return f"{price:,.2f}"
+        elif name == "USDIDR":
+            return f"Rp {price:,.0f}"
+        elif name == "OIL":
+            return f"US$ {price:.2f}"
+        elif name == "GOLD":
+            return f"US$ {price:.2f}"
+        return f"{price:.2f}"
+    
+    def get_trend(self, name):
+        mom = self.get_momentum(name)
+        if mom > 0.5:
+            return "🟢 BULLISH"
+        elif mom < -0.5:
+            return "🔴 BEARISH"
+        else:
+            return "🟡 NETRAL"
+    
+    def is_ihsg_bullish(self):
+        if 'IHSG_Close' in self.data and 'IHSG_MA200' in self.data:
+            return self.data['IHSG_Close'] > self.data['IHSG_MA200']
+        return True
+
+# =============================================================================
+# 8. SHARED UTILITY FUNCTIONS
+# =============================================================================
+
+def normalize_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
-def replace_inf_with_nan(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    num_cols = out.select_dtypes(include=[np.number]).columns
-    out.loc[:, num_cols] = out.loc[:, num_cols].replace([np.inf, -np.inf], np.nan)
-    return out
-
-def download_data(symbol: str, interval: str, start: str, end: str, intraday_period: str) -> pd.DataFrame:
-    if interval in {"1h", "60m", "30m", "15m", "5m", "1m"}:
-        raw = yf.download(symbol, period=intraday_period, interval=interval, auto_adjust=True, progress=True)
-    else:
-        raw = yf.download(symbol, start=start, end=end, interval=interval, auto_adjust=True, progress=True)
-    raw = normalize_columns(raw)
-    raw = filter_jakarta_sessions(raw, interval)
-    return raw
-
-def apply_as_of_cutoff(df: pd.DataFrame, as_of_date: str | None) -> pd.DataFrame:
-    if as_of_date is None:
-        return df
-    cutoff = pd.to_datetime(as_of_date)
-    # Jika user isi tanggal tanpa jam, anggap sampai akhir hari itu
-    if len(str(as_of_date)) <= 10:
-        cutoff = cutoff + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-    idx = df.index
-    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None and cutoff.tzinfo is None:
-        cutoff = cutoff.tz_localize(idx.tz)
-    return df.loc[df.index <= cutoff].copy()
-
-def apply_idx_to_jakarta(df: pd.DataFrame) -> pd.DataFrame:
+def apply_idx_to_jakarta(df, tz="Asia/Jakarta"):
     out = df.copy()
     if not isinstance(out.index, pd.DatetimeIndex):
         return out
     if out.index.tz is None:
-        out.index = out.index.tz_localize(JKT_TZ)
+        out.index = out.index.tz_localize(tz)
     else:
-        out.index = out.index.tz_convert(JKT_TZ)
+        out.index = out.index.tz_convert(tz)
     return out
 
-def filter_jakarta_sessions(df: pd.DataFrame, interval: str) -> pd.DataFrame:
-    """Filter data agar hanya jam perdagangan BEI sesi 1 & 2."""
-    if interval not in {"1h", "60m", "30m", "15m", "5m", "1m"}:
-        return df
-    out = apply_idx_to_jakarta(df)
-    sess1 = out.between_time(SESSION1_START, SESSION1_END, inclusive="both")
-    sess2 = out.between_time(SESSION2_START, SESSION2_END, inclusive="both")
-    out = pd.concat([sess1, sess2]).sort_index()
-    # buang akhir pekan bila ada
+def filter_jakarta_sessions(df, config):
+    out = apply_idx_to_jakarta(df, config.JKT_TZ)
+    sess1 = out.between_time(config.SESSION1_START, config.SESSION1_END, inclusive="both")
+    sess2 = out.between_time(config.SESSION2_START, config.SESSION2_END, inclusive="both")
+    
+    if not sess1.empty or not sess2.empty:
+        out = pd.concat([sess1, sess2]).sort_index()
+    
     if isinstance(out.index, pd.DatetimeIndex):
         out = out[out.index.dayofweek < 5]
     return out
 
-def try_download_close_series(symbol: str, interval: str, start: str, end: str, intraday_period: str, as_of_date: str | None) -> pd.Series | None:
+def calculate_spread_pct(df):
     try:
-        raw = download_data(symbol, interval, start, end, intraday_period)
-        raw = apply_as_of_cutoff(raw, as_of_date)
-        if raw.empty or "Close" not in raw.columns:
-            return None
-        ser = raw["Close"].copy()
-        ser.name = symbol
-        return ser
-    except Exception:
+        spread = ((df['High'] - df['Low']) / df['Close']).tail(10).mean() * 100
+        return float(spread)
+    except:
+        return 999.0
+
+def calculate_return(series, period=5):
+    if len(series) < period + 1:
+        return 0.0
+    return (series.iloc[-1] / series.iloc[-period-1] - 1) * 100
+
+# =============================================================================
+# 9. CACHED DATA FETCHER
+# =============================================================================
+
+class CachedDataFetcher:
+    def __init__(self, cache_dir='stock_cache'):
+        self.cache_dir = cache_dir
+        self.stats = {'total': 0, 'success': 0, 'filtered': 0, 'failed': 0, 'cached': 0}
+        os.makedirs(cache_dir, exist_ok=True)
+        
+    def _get_cache_key(self, symbol, config):
+        today = datetime.now().strftime("%Y-%m-%d")
+        return f"{symbol}_{config.MODE}_{today}"
+        
+    def _load_from_cache(self, cache_key):
+        cache_file = f"{self.cache_dir}/{cache_key}.pkl"
+        if os.path.exists(cache_file):
+            try:
+                file_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+                if datetime.now() - file_time < timedelta(days=1):
+                    with open(cache_file, 'rb') as f:
+                        self.stats['cached'] += 1
+                        return pickle.load(f)
+            except:
+                pass
         return None
-
-def add_market_context_features(df: pd.DataFrame, interval: str, start: str, end: str, intraday_period: str, as_of_date: str | None):
-    out = df.copy()
-    info = {
-        "ihsg_used": False,
-        "indovix_symbol": None,
-        "currency_used": False,
-        "global_markets_used": 0,
-        "commodities_used": 0,
-        "timestamps_aligned": True,
-    }
-    is_intraday = interval in {"1h", "60m", "30m", "15m", "5m", "1m"}
-    ctx_roll = 12 if is_intraday else 20
-    ihsg_close = try_download_close_series(IHSG_TICKER, interval, start, end, intraday_period, as_of_date)
-    if ihsg_close is not None:
-        ihsg_close = ihsg_close.reindex(out.index).ffill().bfill()
-        ihsg_ret = ihsg_close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        ihsg_ma20 = ihsg_close.rolling(ctx_roll).mean().replace([np.inf, -np.inf], np.nan)
-        out["IHSG_Return_1"] = ihsg_ret
-        out["IHSG_Return_5"] = ihsg_close.pct_change(5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        out["IHSG_Volatility_10"] = ihsg_ret.rolling(10).std().fillna(0.0)
-        out["IHSG_MA20"] = ihsg_ma20.ffill().bfill()
-        out["IHSG_Trend"] = (ihsg_close / ihsg_ma20).replace([np.inf, -np.inf], np.nan).ffill().bfill()
-        out["Market_Risk_Regime"] = (out["IHSG_Trend"] >= 1.0).astype(int)
-        info["ihsg_used"] = True
-    else:
-        out["IHSG_Return_1"] = 0.0
-        out["IHSG_Return_5"] = 0.0
-        out["IHSG_Volatility_10"] = 0.0
-        out["IHSG_MA20"] = 0.0
-        out["IHSG_Trend"] = 1.0
-        out["Market_Risk_Regime"] = 0
-    vix_close = None
-    for ticker in INDO_VIX_CANDIDATES:
-        candidate = try_download_close_series(ticker, interval, start, end, intraday_period, as_of_date)
-        if candidate is not None:
-            vix_close = candidate
-            info["indovix_symbol"] = ticker
-            break
-    if vix_close is not None:
-        vix_close = vix_close.reindex(out.index).ffill().bfill()
-        vix_change = vix_close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        out["INDOVIX_Level"] = vix_close.ffill().bfill()
-        out["INDOVIX_Change_1"] = vix_change
-        out["INDOVIX_Change_5"] = vix_close.pct_change(5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        out["VIX_Change"] = out["INDOVIX_Change_1"]
-        out["VIX_Spike"] = (out["VIX_Change"] > VIX_SPIKE_THRESHOLD).astype(int)
-        out["VIX_Level"] = out["INDOVIX_Level"]
-    else:
-        out["INDOVIX_Level"] = 0.0
-        out["INDOVIX_Change_1"] = 0.0
-        out["INDOVIX_Change_5"] = 0.0
-        out["VIX_Change"] = 0.0
-        out["VIX_Spike"] = 0
-        out["VIX_Level"] = 0.0
-    # Global market + commodity context
-    market_return_cols = []
-    for market_name, market_ticker in GLOBAL_INDEX_TICKERS.items():
-        market_close = try_download_close_series(market_ticker, interval, start, end, intraday_period, as_of_date)
-        prefix = f"GM_{market_name}"
-        if market_close is not None:
-            market_close = market_close.reindex(out.index).ffill().bfill()
-            market_ret_1 = market_close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            market_ret_5 = market_close.pct_change(5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            market_trend = (market_close / market_close.rolling(ctx_roll).mean()).replace([np.inf, -np.inf], np.nan).ffill().bfill()
-            out[f"{prefix}_Return_1"] = market_ret_1
-            out[f"{prefix}_Return_5"] = market_ret_5
-            out[f"{prefix}_Trend"] = market_trend
-            market_return_cols.append(f"{prefix}_Return_1")
-            info["global_markets_used"] += 1
-        else:
-            out[f"{prefix}_Return_1"] = 0.0
-            out[f"{prefix}_Return_5"] = 0.0
-            out[f"{prefix}_Trend"] = 1.0
-    commodity_return_cols = []
-    for commodity_name, commodity_ticker in COMMODITY_TICKERS.items():
-        commodity_close = try_download_close_series(commodity_ticker, interval, start, end, intraday_period, as_of_date)
-        prefix = f"CMDTY_{commodity_name}"
-        if commodity_close is not None:
-            commodity_close = commodity_close.reindex(out.index).ffill().bfill()
-            commodity_ret_1 = commodity_close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            commodity_ret_5 = commodity_close.pct_change(5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-            commodity_trend = (commodity_close / commodity_close.rolling(ctx_roll).mean()).replace([np.inf, -np.inf], np.nan).ffill().bfill()
-            out[f"{prefix}_Return_1"] = commodity_ret_1
-            out[f"{prefix}_Return_5"] = commodity_ret_5
-            out[f"{prefix}_Trend"] = commodity_trend
-            commodity_return_cols.append(f"{prefix}_Return_1")
-            info["commodities_used"] += 1
-        else:
-            out[f"{prefix}_Return_1"] = 0.0
-            out[f"{prefix}_Return_5"] = 0.0
-            out[f"{prefix}_Trend"] = 1.0
-    if market_return_cols:
-        out["Global_Market_Return_Composite"] = out[market_return_cols].mean(axis=1)
-        out["Global_Market_Stress"] = out[market_return_cols].std(axis=1).fillna(0.0)
-    else:
-        out["Global_Market_Return_Composite"] = 0.0
-        out["Global_Market_Stress"] = 0.0
-    if commodity_return_cols:
-        out["Commodity_Return_Composite"] = out[commodity_return_cols].mean(axis=1)
-    else:
-        out["Commodity_Return_Composite"] = 0.0
-    # Interaction: kombinasikan global risk proxy dengan INDO VIX
-    vix_proxy = out["INDOVIX_Change_1"].clip(-0.3, 0.3)
-    out["Global_VIX_Interaction"] = out["Global_Market_Return_Composite"] * vix_proxy
-    out["Commodity_VIX_Interaction"] = out["Commodity_Return_Composite"] * vix_proxy
-    # Currency context (USD/IDR)
-    usdidr_close = try_download_close_series(USDIDR_TICKER, interval, start, end, intraday_period, as_of_date)
-    if usdidr_close is not None:
-        usdidr_close = usdidr_close.reindex(out.index).ffill().bfill()
-        usdidr_ret = usdidr_close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        out["USDIDR_Level"] = usdidr_close
-        out["USDIDR_Return_1"] = usdidr_ret
-        out["USDIDR_Return_5"] = usdidr_close.pct_change(5).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-        out["USDIDR_Trend"] = (usdidr_close / usdidr_close.rolling(ctx_roll).mean()).replace([np.inf, -np.inf], np.nan).ffill().bfill()
-        info["currency_used"] = True
-    else:
-        out["USDIDR_Level"] = 0.0
-        out["USDIDR_Return_1"] = 0.0
-        out["USDIDR_Return_5"] = 0.0
-        out["USDIDR_Trend"] = 1.0
-    # Hindari drop semua baris saat beberapa sumber eksternal kosong/tidak sinkron.
-    out = replace_inf_with_nan(out)
-    out = out.ffill().bfill()
-    for col in out.columns:
-        if out[col].isna().all():
-            out[col] = 1.0 if ("Trend" in col or col.endswith("_Level")) else 0.0
-    num_cols = out.select_dtypes(include=[np.number]).columns
-    out.loc[:, num_cols] = out.loc[:, num_cols].fillna(0.0)
-    # Pastikan target tetap valid; jika NaN lebih baik dibuang spesifik di target saja.
-    if "Target" in out.columns:
-        out = out[out["Target"].notna()].copy()
-    return out, info
-
-def build_features(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
-    out = df.copy()
-    if len(out) < MIN_RAW_ROWS_FOR_FEATURES:
-        return pd.DataFrame()
-    close = out["Close"]
-    high = out["High"]
-    low = out["Low"]
-    volume = out["Volume"]
-    if interval in {"1h", "60m", "30m", "15m", "5m", "1m"}:
-        ma_short, ma_long = 8, 20
-        ret_w1, ret_w2 = 3, 6
-        vol_w1, vol_w2 = 6, 12
-        lag_list = [1, 2, 3, 4, 6]
-        roll_ctx = 12
-    else:
-        ma_short, ma_long = 20, 50
-        ret_w1, ret_w2 = 5, 10
-        vol_w1, vol_w2 = 10, 20
-        lag_list = [1, 2, 3, 5, 10]
-        roll_ctx = 20
-    out["RSI"] = ta.momentum.RSIIndicator(close).rsi()
-    out["MA20"] = close.rolling(ma_short).mean()
-    out["MA50"] = close.rolling(ma_long).mean()
-    out["Trend_Filter"] = (out["MA20"] > out["MA50"]).astype(int)
-    out["MACD"] = ta.trend.MACD(close).macd()
-    bb = ta.volatility.BollingerBands(close)
-    out["BB_high"] = bb.bollinger_hband()
-    out["BB_low"] = bb.bollinger_lband()
-    out["BB_width"] = out["BB_high"] - out["BB_low"]
-    atr_window = max(2, min(14, len(out)))
-    out["ATR"] = ta.volatility.AverageTrueRange(high, low, close, window=atr_window).average_true_range()
-    out["OBV"] = ta.volume.OnBalanceVolumeIndicator(close, volume).on_balance_volume()
-    out["Return"] = close.pct_change()
-    out["Return_5"] = close.pct_change(ret_w1)
-    out["Return_10"] = close.pct_change(ret_w2)
-    out["Volatility_10"] = out["Return"].rolling(vol_w1).std()
-    out["Volatility_20"] = out["Return"].rolling(vol_w2).std()
-    out["Volume_Change"] = volume.pct_change()
-    for lag in lag_list:
-        out[f"Lag_Return_{lag}"] = out["Return"].shift(lag)
-        out[f"Lag_RSI_{lag}"] = out["RSI"].shift(lag)
-    # Volume anomaly + buyer/seller pressure proxy
-    out["Candle_Direction"] = np.sign(out["Close"] - out["Open"])
-    out["Buy_Volume_Proxy"] = np.where(out["Candle_Direction"] > 0, out["Volume"], 0.0)
-    out["Sell_Volume_Proxy"] = np.where(out["Candle_Direction"] < 0, out["Volume"], 0.0)
-    vol_mean_20 = out["Volume"].rolling(roll_ctx).mean()
-    vol_std_20 = out["Volume"].rolling(roll_ctx).std().replace(0, np.nan)
-    out["Volume_ZScore"] = ((out["Volume"] - vol_mean_20) / vol_std_20).replace([np.inf, -np.inf], np.nan)
-    buy_mean_20 = out["Buy_Volume_Proxy"].rolling(roll_ctx).mean()
-    buy_std_20 = out["Buy_Volume_Proxy"].rolling(roll_ctx).std().replace(0, np.nan)
-    sell_mean_20 = out["Sell_Volume_Proxy"].rolling(roll_ctx).mean()
-    sell_std_20 = out["Sell_Volume_Proxy"].rolling(roll_ctx).std().replace(0, np.nan)
-    out["Buy_Volume_Anomaly"] = ((out["Buy_Volume_Proxy"] - buy_mean_20) / buy_std_20).replace([np.inf, -np.inf], np.nan)
-    out["Sell_Volume_Anomaly"] = ((out["Sell_Volume_Proxy"] - sell_mean_20) / sell_std_20).replace([np.inf, -np.inf], np.nan)
-    out["Net_Volume_Anomaly"] = out["Buy_Volume_Anomaly"] - out["Sell_Volume_Anomaly"]
-    out["Volume_Anomaly_Spike"] = (out["Volume_ZScore"] > 2.0).astype(int)
-    # Support / Resistance features (lebih realistis untuk intraday/daily)
-    if interval in {"1h", "60m", "30m", "15m", "5m", "1m"}:
-        sr_base = SR_LOOKBACK_INTRADAY
-    else:
-        sr_base = SR_LOOKBACK_DAILY
-    sr_lookback = max(5, min(sr_base, max(5, len(out) - 1)))
-    out["Support_Level"] = out["Low"].rolling(sr_lookback).min()
-    out["Resistance_Level"] = out["High"].rolling(sr_lookback).max()
-    out["Distance_To_Support"] = (out["Close"] - out["Support_Level"]) / out["Close"]
-    out["Distance_To_Resistance"] = (out["Resistance_Level"] - out["Close"]) / out["Close"]
-    out["Support_Break"] = (out["Close"] < out["Support_Level"] * 0.999).astype(int)
-    out["Resistance_Break"] = (out["Close"] > out["Resistance_Level"] * 1.001).astype(int)
-    out["Future_Return"] = out["Return"].shift(-1)
-    if TARGET_MODE == "three_class":
-        conditions = [
-            out["Future_Return"] < -RETURN_THRESHOLD,
-            out["Future_Return"].between(-RETURN_THRESHOLD, RETURN_THRESHOLD, inclusive="both"),
-            out["Future_Return"] > RETURN_THRESHOLD,
-        ]
-        out["Target"] = np.select(conditions, [0, 1, 2], default=1).astype(int)
-    else:
-        out["Target"] = (out["Future_Return"] > RETURN_THRESHOLD).astype(int)
-    out = replace_inf_with_nan(out)
-    return out.dropna().copy()
-
-def safe_auc(y_true: np.ndarray, probs: np.ndarray) -> float:
-    if len(np.unique(y_true)) < 2:
-        return float("nan")
-    return roc_auc_score(y_true, probs)
-
-def split_time_series(df: pd.DataFrame):
-    n = len(df)
-    if n < 12:
-        raise ValueError(f"Data terlalu sedikit setelah feature engineering: {n} baris. Coba perbesar rentang START/END, ganti TRADING_MODE, atau gunakan saham dengan histori lebih panjang.")
-    train_end = int(n * TRAIN_RATIO)
-    val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
-    # pastikan masing-masing split minimal 1
-    train_end = max(1, min(train_end, n - 2))
-    val_end = max(train_end + 1, min(val_end, n - 1))
-    train_df = df.iloc[:train_end]
-    val_df = df.iloc[train_end:val_end]
-    test_df = df.iloc[val_end:]
-    if len(train_df) == 0 or len(val_df) == 0 or len(test_df) == 0:
-        raise ValueError(
-            f"Split menghasilkan data kosong (train={len(train_df)}, val={len(val_df)}, test={len(test_df)})."
-        )
-    return train_df, val_df, test_df
-
-def find_best_threshold(y_true: np.ndarray, probs: np.ndarray) -> float:
-    unique_classes = np.unique(y_true)
-    if len(y_true) == 0 or len(unique_classes) < 2:
-        return 0.5
-    # Threshold search hanya relevan untuk kasus biner (0/1).
-    # Untuk multiclass (mis. three_class), pakai decision default.
-    if len(unique_classes) > 2:
-        return 0.5
-    thresholds = np.arange(0.30, 0.71, 0.01)
-    best_t, best_bacc, best_f1 = 0.5, -1.0, -1.0
-    for t in thresholds:
-        preds = (probs >= t).astype(int)
-        bacc = balanced_accuracy_score(y_true, preds)
-        f1 = f1_score(y_true, preds, zero_division=0)
-        if (bacc > best_bacc) or (np.isclose(bacc, best_bacc) and f1 > best_f1):
-            best_t, best_bacc, best_f1 = float(t), float(bacc), float(f1)
-    return best_t
-
-def decide_signal(prob_up: float, threshold: float, hold_band: float = HOLD_BAND) -> str:
-    upper = threshold + hold_band
-    lower = threshold - hold_band
-    if prob_up >= upper and prob_up > 0.5:
-        return "BELI"
-    if prob_up <= lower and prob_up < 0.5:
-        return "JUAL"
-    return "TAHAN"
-
-
-
-
-
-
-def interpret_volume_flow(net_anomaly: float, buy_anomaly: float, sell_anomaly: float) -> str:
-    if any(np.isnan(x) for x in [net_anomaly, buy_anomaly, sell_anomaly]):
-        return "Volume flow tidak tersedia"
-    if net_anomaly >= 1.0 and buy_anomaly > sell_anomaly:
-        return "BUY PRESSURE DOMINAN (anomali beli kuat)"
-    if net_anomaly <= -1.0 and sell_anomaly > buy_anomaly:
-        return "SELL PRESSURE DOMINAN (anomali jual kuat)"
-    return "Volume flow netral/campuran"
-
-
-
-
-def interpret_sr_breakout(close_price: float, support: float, resistance: float, tol: float = 0.001):
-    if any(np.isnan(x) for x in [close_price, support, resistance]):
-        return "SR tidak tersedia", 0
-    if close_price < support * (1 - tol):
-        return "SUPPORT JEBOL (bearish breakout)", -1
-    if close_price > resistance * (1 + tol):
-        return "RESISTANCE JEBOL (bullish breakout)", 1
-    return "Masih di dalam range support-resistance", 0
-
-
-def adjust_signal_with_vix_fear(signal: str, prob_up: float, vix_level: float | None, vix_change_1: float | None):
-    """
-    Menyesuaikan signal dengan konteks fear dari Indonesia Volatility Index.
-    - Jika VIX melonjak/tinggi, sinyal BELI dibuat lebih defensif.
-    """
-    if signal == "BELI":
-        spike = (vix_change_1 is not None) and (not np.isnan(vix_change_1)) and (vix_change_1 >= VIX_SPIKE_THRESHOLD)
-        high_level = (vix_level is not None) and (not np.isnan(vix_level)) and (vix_level >= VIX_HIGH_LEVEL)
-        if spike and high_level:
-            return "JUAL", "Fear tinggi (VIX spike + level tinggi): BELI diturunkan jadi JUAL defensif"
-        if spike or high_level:
-            return "TAHAN", "Fear meningkat dari INDO VIX: BELI diturunkan jadi TAHAN"
-    if signal == "TAHAN":
-        low_fear = (vix_level is not None) and (not np.isnan(vix_level)) and (vix_level < (VIX_HIGH_LEVEL * 0.8))
-        fear_drop = (vix_change_1 is not None) and (not np.isnan(vix_change_1)) and (vix_change_1 <= -0.03)
-        if low_fear and fear_drop and prob_up >= 0.58:
-            return "BELI", "Fear menurun signifikan + probabilitas naik kuat: TAHAN dinaikkan jadi BELI"
-    return signal, "Tidak ada penyesuaian signal dari INDO VIX"
-
-
-
-
-class AdaptiveQuantEnsemble:
-    """Ensemble quant adaptif: pembobotan model berbasis performa walk-forward + regularisasi probabilitas."""
-    def __init__(self, models: list[tuple[str, object]], temperature: float = 0.85):
-        self.models = models
-        self.temperature = temperature
-        self.model_weights_: dict[str, float] = {}
-        self.fitted_models_: list[tuple[str, object]] = []
-    def _time_split(self, X, y):
-        n = len(y)
-        split_idx = max(20, int(n * 0.8))
-        split_idx = min(split_idx, n - 5) if n > 25 else max(1, n - 1)
-        return X[:split_idx], y[:split_idx], X[split_idx:], y[split_idx:]
-    def fit(self, X, y):
-        X_arr = np.asarray(X)
-        y_arr = np.asarray(y)
-        # kalibrasi bobot antar model dengan walk-forward holdout sederhana
-        X_sub, y_sub, X_hold, y_hold = self._time_split(X_arr, y_arr)
-        raw_scores = []
-        temp_models = []
-        for name, model in self.models:
-            model.fit(X_sub, y_sub)
-            p_hold = np.nan_to_num(model.predict_proba(X_hold)[:, 1], nan=0.5, posinf=1.0, neginf=0.0)
-            th = find_best_threshold(y_hold, p_hold)
-            pred_hold = (p_hold >= th).astype(int)
-            score = balanced_accuracy_score(y_hold, pred_hold) if len(np.unique(y_hold)) > 1 else 0.5
-            raw_scores.append(max(0.01, float(score)))
-            temp_models.append((name, model))
-        # softmax-like weighting agar stabil
-        score_arr = np.array(raw_scores, dtype=float)
-        score_arr = np.exp((score_arr - np.max(score_arr)) * 8.0)
-        score_arr = score_arr / np.sum(score_arr)
-        self.model_weights_ = {name: float(w) for (name, _), w in zip(temp_models, score_arr)}
-        # fit ulang seluruh model dengan full training
-        self.fitted_models_ = []
-        for name, model in self.models:
-            model.fit(X_arr, y_arr)
-            self.fitted_models_.append((name, model))
-        return self
-    def predict_proba(self, X):
-        if not self.fitted_models_:
-            raise ValueError("AdaptiveQuantEnsemble belum di-fit.")
-        probs = []
-        weights = []
-        for name, model in self.fitted_models_:
-            p = np.nan_to_num(model.predict_proba(X), nan=0.5, posinf=1.0, neginf=0.0)
-            probs.append(p)
-            weights.append(float(self.model_weights_.get(name, 1.0 / max(1, len(self.fitted_models_)))))
-        w = np.array(weights, dtype=float)
-        w = w / np.sum(w)
-        blended = np.zeros_like(probs[0], dtype=float)
-        for wi, pi in zip(w, probs):
-            blended += wi * pi
-        # realism: shrink probabilitas saat antar-model tidak sepakat (kurangi ekstrem bullish/bearish)
-        p_up_each = np.column_stack([p[:, 1] for p in probs])
-        disagreement = np.std(p_up_each, axis=1)
-        shrink = np.clip(disagreement * self.temperature, 0.0, 0.35)
-        p_up = blended[:, 1]
-        p_up = (1 - shrink) * p_up + shrink * 0.5
-        p_down = 1 - p_up
-        return np.column_stack([p_down, p_up])
-
-
-def build_adaptive_quant_ensemble(include_xgb: bool):
-    base_models = [
-        (
-            "hgb",
-            HistGradientBoostingClassifier(
-                learning_rate=0.03,
-                max_depth=4,
-                max_iter=450,
-                min_samples_leaf=20,
-                random_state=SEED,
-            ),
-        ),
-        (
-            "et",
-            ExtraTreesClassifier(
-                n_estimators=800,
-                max_depth=10,
-                min_samples_leaf=6,
-                class_weight="balanced_subsample",
-                random_state=SEED,
-                n_jobs=-1,
-            ),
-        ),
-        (
-            "lr",
-            Pipeline(
-                steps=[
-                    ("imputer", SimpleImputer(strategy="median")),
-                    ("scaler", StandardScaler()),
-                    ("clf", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=SEED)),
-                ]
-            ),
-        ),
-    ]
-    if include_xgb and TARGET_MODE != "three_class":
+        
+    def _save_to_cache(self, cache_key, data):
+        cache_file = f"{self.cache_dir}/{cache_key}.pkl"
         try:
-            from xgboost import XGBClassifier
-            base_models.append(
-                (
-                    "xgb",
-                    XGBClassifier(
-                        n_estimators=500,
-                        learning_rate=0.03,
-                        max_depth=4,
-                        subsample=0.9,
-                        colsample_bytree=0.9,
-                        reg_lambda=1.0,
-                        objective="binary:logistic",
-                        eval_metric="logloss",
-                        random_state=SEED,
-                        n_jobs=-1,
-                    ),
-                )
+            with open(cache_file, 'wb') as f:
+                pickle.dump(data, f)
+        except:
+            pass
+    
+    def fetch(self, symbol, config):
+        self.stats['total'] += 1
+        
+        cache_key = self._get_cache_key(symbol, config)
+        cached_df = self._load_from_cache(cache_key)
+        if cached_df is not None:
+            return cached_df
+        
+        try:
+            ticker = f"{symbol}.JK"
+            
+            df = yf.download(
+                ticker, 
+                period=config.PERIOD, 
+                interval=config.INTERVAL,
+                auto_adjust=True,
+                progress=False,
+                timeout=10
             )
+            
+            if df.empty:
+                self.stats['failed'] += 1
+                return None
+            
+            df = normalize_columns(df)
+            
+            if len(df) < config.MIN_HISTORY:
+                self.stats['failed'] += 1
+                return None
+            
+            avg_volume_20 = df['Volume'].tail(20).mean()
+            if avg_volume_20 < config.MIN_AVG_VOLUME:
+                self.stats['filtered'] += 1
+                return None
+            
+            if config.MODE == 'intraday':
+                df_filtered = filter_jakarta_sessions(df, config)
+                if not df_filtered.empty and len(df_filtered) >= 10:
+                    df = df_filtered
+                else:
+                    self.stats['filtered'] += 1
+                    return None
+            
+            last_close = float(df['Close'].iloc[-1])
+            last_volume = int(df['Volume'].iloc[-1])
+            
+            if last_close < config.MIN_PRICE or last_close > config.MAX_PRICE:
+                self.stats['filtered'] += 1
+                return None
+            
+            if last_volume < config.MIN_VOLUME:
+                self.stats['filtered'] += 1
+                return None
+            
+            spread = calculate_spread_pct(df)
+            if spread > config.MAX_SPREAD_PCT:
+                self.stats['filtered'] += 1
+                return None
+            
+            self._save_to_cache(cache_key, df)
+            
+            self.stats['success'] += 1
+            return df
+            
         except Exception:
-            pass
-    return AdaptiveQuantEnsemble(models=base_models, temperature=0.85)
+            self.stats['failed'] += 1
+            return None
+    
+    def print_stats(self):
+        print(f"\n📊 Download Statistics:")
+        print(f"   Total: {self.stats['total']}")
+        print(f"   From Cache: {self.stats['cached']}")
+        print(f"   Success: {self.stats['success']}")
+        print(f"   Filtered: {self.stats['filtered']}")
+        print(f"   Failed: {self.stats['failed']}")
 
+# =============================================================================
+# 10. BASE STRATEGY ENGINE
+# =============================================================================
 
-
-
-class RegimeAwareAdaptiveQuant:
-    """Model quant regime-aware: gabungkan 2 ensemble (low-vol & high-vol) dengan gating volatilitas."""
-    def __init__(self, include_xgb: bool = True):
-        self.include_xgb = include_xgb
-        self.low_model = build_adaptive_quant_ensemble(include_xgb=include_xgb)
-        self.high_model = build_adaptive_quant_ensemble(include_xgb=include_xgb)
-        self.regime_center_ = 0.0
-        self.regime_scale_ = 1.0
-        self.regime_col_ = "Volatility_20"
-    def _extract_regime_series(self, X):
-        if hasattr(X, "columns") and self.regime_col_ in X.columns:
-            ser = X[self.regime_col_].to_numpy(dtype=float)
+class StrategyEngine:
+    def __init__(self, config, global_fetcher):
+        self.config = config
+        self.global_fetcher = global_fetcher
+    
+    def get_signal(self, symbol, df):
+        raise NotImplementedError
+    
+    def calculate_lot(self, close, risk_per_lot, max_amount):
+        max_lot_by_modal = int(self.config.MODAL / (close * 100))
+        max_lot_by_risk = int(max_amount / (close * 100)) if max_amount >= close * 100 else 0
+        max_lot = min(max_lot_by_modal, max_lot_by_risk, 5)
+        
+        if max_lot >= 1:
+            lot = max_lot
+            cost = lot * 100 * close
+            if cost > self.config.MODAL:
+                lot = int(self.config.MODAL / (close * 100))
+                if lot >= 1:
+                    cost = lot * 100 * close
+                    return lot, cost
+                else:
+                    return None, None
+            return lot, cost
         else:
-            # fallback jika kolom tidak ada / input ndarray
-            arr = np.asarray(X, dtype=float)
-            ser = arr[:, -1] if arr.ndim == 2 and arr.shape[1] > 0 else np.zeros(len(arr), dtype=float)
-        ser = np.nan_to_num(ser, nan=np.nanmedian(ser) if len(ser) else 0.0, posinf=0.0, neginf=0.0)
-        return ser
-    def fit(self, X, y):
-        y_arr = np.asarray(y)
-        regime = self._extract_regime_series(X)
-        self.regime_center_ = float(np.nanmedian(regime))
-        self.regime_scale_ = float(np.nanstd(regime)) if np.nanstd(regime) > 1e-9 else 1.0
-        high_mask = regime >= self.regime_center_
-        low_mask = ~high_mask
-        # fallback jika salah satu regime terlalu sedikit
-        if np.sum(low_mask) < 20 or np.sum(high_mask) < 20:
-            self.low_model.fit(X, y_arr)
-            self.high_model.fit(X, y_arr)
-            return self
-        if hasattr(X, "iloc"):
-            self.low_model.fit(X.iloc[low_mask], y_arr[low_mask])
-            self.high_model.fit(X.iloc[high_mask], y_arr[high_mask])
+            return None, None
+
+# =============================================================================
+# 11. SWING ENGINE
+# =============================================================================
+
+class OutperformDetector:
+    def __init__(self):
+        self.RETURN_THRESHOLD = 2.0
+        self.BEARISH_THRESHOLD = -2.0
+        self.HOLD_THRESHOLD = -1.0
+        self.VOLUME_THRESHOLD = 1.5
+        
+    def is_outperform(self, saham_return, ihsg_return, volume_ratio):
+        if saham_return > ihsg_return + self.RETURN_THRESHOLD:
+            return True, f"Return > IHSG+2%", 2
+        if ihsg_return < self.BEARISH_THRESHOLD and saham_return > self.HOLD_THRESHOLD:
+            return True, f"Tahan turun", 2
+        if ihsg_return < self.BEARISH_THRESHOLD and volume_ratio > self.VOLUME_THRESHOLD:
+            return True, f"Volume tinggi", 2
+        return False, "", 0
+
+
+class InflowOutflowDetector:
+    def __init__(self):
+        self.INFLOW_BONUS = 1
+        self.OUTFLOW_PENALTY = -1
+        
+    def calculate_money_flow(self, df):
+        if len(df) < 2:
+            return 0, "NETRAL"
+        last_close = df['Close'].iloc[-1]
+        prev_close = df['Close'].iloc[-2]
+        last_volume = df['Volume'].iloc[-1]
+        price_change = last_close - prev_close
+        money_flow = price_change * last_volume
+        avg_volume = df['Volume'].tail(10).mean()
+        volume_ratio = last_volume / avg_volume if avg_volume > 0 else 1
+        if money_flow > 0 and volume_ratio > 1.2:
+            return 1, "INFLOW"
+        elif money_flow > 0:
+            return 1, "INFLOW"
+        elif money_flow < 0 and volume_ratio > 1.2:
+            return -1, "OUTFLOW"
+        elif money_flow < 0:
+            return -1, "OUTFLOW"
         else:
-            X_arr = np.asarray(X)
-            self.low_model.fit(X_arr[low_mask], y_arr[low_mask])
-            self.high_model.fit(X_arr[high_mask], y_arr[high_mask])
-        return self
-    def predict_proba(self, X):
-        p_low = self.low_model.predict_proba(X)
-        p_high = self.high_model.predict_proba(X)
-        regime = self._extract_regime_series(X)
-        z = (regime - self.regime_center_) / self.regime_scale_
-        gate_high = 1 / (1 + np.exp(-z))
-        gate_high = np.clip(gate_high, 0.05, 0.95)
-        p_up = (1 - gate_high) * p_low[:, 1] + gate_high * p_high[:, 1]
-        p_up = np.clip(p_up, 0.01, 0.99)
-        return np.column_stack([1 - p_up, p_up])
+            return 0, "NETRAL"
+    
+    def get_accumulation_distribution(self, df, period=14):
+        if len(df) < period:
+            return 0, "NETRAL"
+        money_flow_values = []
+        for i in range(-period, 0):
+            if i < -1:
+                price_change = df['Close'].iloc[i] - df['Close'].iloc[i-1]
+                money_flow = price_change * df['Volume'].iloc[i]
+                money_flow_values.append(money_flow)
+        if len(money_flow_values) > 5:
+            recent = sum(money_flow_values[-3:])
+            previous = sum(money_flow_values[-6:-3])
+            if recent > previous * 1.5:
+                return 2, "AKUMULASI"
+            elif recent > previous:
+                return 1, "AKUMULASI"
+            elif recent < previous * 0.5:
+                return -2, "DISTRIBUSI"
+            elif recent < previous:
+                return -1, "DISTRIBUSI"
+        return 0, "NETRAL"
 
 
-def get_model_candidates():
-    candidates = {
-        "RegimeAwareAdaptiveQuant": RegimeAwareAdaptiveQuant(include_xgb=True),
-        "AdaptiveQuantEnsemble": build_adaptive_quant_ensemble(include_xgb=True),
-        "HistGradientBoosting": HistGradientBoostingClassifier(
-            learning_rate=0.03,
-            max_depth=4,
-            max_iter=400,
-            min_samples_leaf=20,
-            random_state=SEED,
-        ),
-        "ExtraTrees": ExtraTreesClassifier(
-            n_estimators=700,
-            max_depth=10,
-            min_samples_leaf=6,
-            class_weight="balanced_subsample",
-            random_state=SEED,
-            n_jobs=-1,
-        ),
-        "LogisticRegression": Pipeline(
-            steps=[
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-                ("clf", LogisticRegression(max_iter=2000, class_weight="balanced", random_state=SEED)),
-            ]
-        ),
-    }
-    if TARGET_MODE != "three_class":
+class MultipleTouchDetector:
+    def __init__(self, window=60, tolerance=1.0):
+        self.window = window
+        self.tolerance = tolerance / 100
+        self.support_levels = {'kuat': [], 'sedang': []}
+        self.resistance_levels = {'kuat': [], 'sedang': []}
+        
+    def _count_touches(self, prices, level):
+        if len(prices) == 0:
+            return 0
+        distances = np.abs(prices - level)
+        touch_threshold = level * self.tolerance
+        touches = np.sum(distances < touch_threshold)
+        return touches
+    
+    def _get_candidate_levels(self, low_prices, high_prices):
+        all_prices = np.concatenate([low_prices, high_prices])
+        if len(all_prices) == 0:
+            return []
+        avg_price = np.mean(all_prices)
+        step = avg_price * 0.005
+        min_price = np.min(all_prices) * 0.98
+        max_price = np.max(all_prices) * 1.02
+        candidates = np.arange(min_price, max_price + step, step)
+        return candidates
+    
+    def detect_levels(self, df):
+        high = df['High'].values
+        low = df['Low'].values
+        dates = df.index.values
+        self.support_levels = {'kuat': [], 'sedang': []}
+        self.resistance_levels = {'kuat': [], 'sedang': []}
+        for i in range(self.window, len(high)):
+            window_high = high[i-self.window:i]
+            window_low = low[i-self.window:i]
+            window_date = dates[i]
+            candidates = self._get_candidate_levels(window_low, window_high)
+            for level in candidates:
+                touches_support = self._count_touches(window_low, level)
+                touches_resistance = self._count_touches(window_high, level)
+                if touches_support >= 3:
+                    self.support_levels['kuat'].append({'price': level, 'touches': touches_support, 'date': window_date, 'strength': 'KUAT'})
+                elif touches_support == 2:
+                    self.support_levels['sedang'].append({'price': level, 'touches': touches_support, 'date': window_date, 'strength': 'SEDANG'})
+                if touches_resistance >= 3:
+                    self.resistance_levels['kuat'].append({'price': level, 'touches': touches_resistance, 'date': window_date, 'strength': 'KUAT'})
+                elif touches_resistance == 2:
+                    self.resistance_levels['sedang'].append({'price': level, 'touches': touches_resistance, 'date': window_date, 'strength': 'SEDANG'})
+        self._deduplicate_and_sort()
+        return self.support_levels, self.resistance_levels
+    
+    def _deduplicate_and_sort(self):
+        def deduplicate(levels, tolerance_mult=2.0):
+            if not levels:
+                return []
+            sorted_levels = sorted(levels, key=lambda x: x['price'])
+            unique = []
+            current_group = [sorted_levels[0]]
+            for level in sorted_levels[1:]:
+                if abs(level['price'] - current_group[-1]['price']) < (level['price'] * self.tolerance * tolerance_mult):
+                    current_group.append(level)
+                else:
+                    best = max(current_group, key=lambda x: x['touches'])
+                    unique.append(best)
+                    current_group = [level]
+            if current_group:
+                best = max(current_group, key=lambda x: x['touches'])
+                unique.append(best)
+            return unique
+        self.support_levels['kuat'] = deduplicate(self.support_levels['kuat'])
+        self.support_levels['sedang'] = deduplicate(self.support_levels['sedang'])
+        self.resistance_levels['kuat'] = deduplicate(self.resistance_levels['kuat'])
+        self.resistance_levels['sedang'] = deduplicate(self.resistance_levels['sedang'])
+    
+    def get_nearest_support(self, price):
+        kuat_below = [s for s in self.support_levels['kuat'] if s['price'] < price]
+        if kuat_below:
+            nearest = max(kuat_below, key=lambda x: x['price'])
+            return nearest['price'], nearest['touches'], nearest['strength']
+        sedang_below = [s for s in self.support_levels['sedang'] if s['price'] < price]
+        if sedang_below:
+            nearest = max(sedang_below, key=lambda x: x['price'])
+            return nearest['price'], nearest['touches'], nearest['strength']
+        return price * 0.95, 1, 'FALLBACK'
+    
+    def get_nearest_resistance(self, price):
+        kuat_above = [r for r in self.resistance_levels['kuat'] if r['price'] > price]
+        if kuat_above:
+            nearest = min(kuat_above, key=lambda x: x['price'])
+            return nearest['price'], nearest['touches'], nearest['strength']
+        sedang_above = [r for r in self.resistance_levels['sedang'] if r['price'] > price]
+        if sedang_above:
+            nearest = min(sedang_above, key=lambda x: x['price'])
+            return nearest['price'], nearest['touches'], nearest['strength']
+        return price * 1.05, 1, 'FALLBACK'
+
+
+class SwingEngine(StrategyEngine):
+    def __init__(self, config, global_fetcher):
+        super().__init__(config, global_fetcher)
+        self.outperform_detector = OutperformDetector()
+        self.inflow_detector = InflowOutflowDetector()
+        self.sr_detector = MultipleTouchDetector(window=config.SUPPORT_PERIOD, tolerance=1.0)
+    
+    def get_sector_boost(self, symbol):
+        boost = 0
+        ihsg_mom = self.global_fetcher.get_momentum("IHSG")
+        if ihsg_mom > 0.5:
+            boost += 1
+        elif ihsg_mom < -0.5:
+            boost -= 1
+        if symbol in EXPORT_SECTOR:
+            usd_mom = self.global_fetcher.get_momentum("USDIDR")
+            if usd_mom > 0.5:
+                boost += 1
+            elif usd_mom < -0.5:
+                boost -= 1
+        if symbol in ENERGY_SECTOR:
+            oil_mom = self.global_fetcher.get_momentum("OIL")
+            if oil_mom > 1.0:
+                boost += 1
+            elif oil_mom < -1.0:
+                boost -= 1
+        if symbol in MINING_GOLD:
+            gold_mom = self.global_fetcher.get_momentum("GOLD")
+            if gold_mom > 1.0:
+                boost += 1
+            elif gold_mom < -1.0:
+                boost -= 1
+        return boost
+    
+    def calculate_atr_sl_tp(self, close, atr, support_price, resistance_price):
+        atr = max(atr, close * 0.005)
+        sl = close - (atr * self.config.SL_MULTIPLIER)
+        tp_from_atr = close + (atr * self.config.TP_MULTIPLIER)
+        tp_from_resistance = resistance_price * 0.98 if resistance_price > close else tp_from_atr
+        tp = min(tp_from_atr, tp_from_resistance)
+        sl = max(sl, close * 0.90)
+        tp = min(tp, close * 1.15)
+        fraction = 5 if close < 100 else 10 if close < 500 else 25
+        sl = round(sl / fraction) * fraction
+        tp = round(tp / fraction) * fraction
+        if sl >= close or tp <= close:
+            return None, None
+        return int(sl), int(tp)
+    
+    def compute_features(self, df):
         try:
-            from xgboost import XGBClassifier
-            candidates["XGBoost"] = XGBClassifier(
-                n_estimators=500,
-                learning_rate=0.03,
-                max_depth=4,
-                subsample=0.9,
-                colsample_bytree=0.9,
-                reg_lambda=1.0,
-                objective="binary:logistic",
-                eval_metric="logloss",
-                random_state=SEED,
-                n_jobs=-1,
+            out = df.copy()
+            close = out['Close']
+            high = out['High']
+            low = out['Low']
+            volume = out['Volume']
+            
+            delta = close.diff()
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.rolling(window=self.config.RSI_PERIOD, min_periods=self.config.RSI_PERIOD).mean()
+            avg_loss = loss.rolling(window=self.config.RSI_PERIOD, min_periods=self.config.RSI_PERIOD).mean()
+            rs = avg_gain / (avg_loss + 1e-6)
+            out['RSI'] = 100 - (100 / (1 + rs))
+            
+            out['MA20'] = close.rolling(window=self.config.MA_SHORT, min_periods=self.config.MA_SHORT).mean()
+            out['MA50'] = close.rolling(window=self.config.MA_LONG, min_periods=self.config.MA_LONG).mean()
+            out['MA200'] = close.rolling(window=self.config.MA200_PERIOD, min_periods=self.config.MA200_PERIOD).mean()
+            out['MA_Trend'] = (out['MA20'] > out['MA50']).astype(float)
+            out['TR'] = np.maximum(high - low, np.maximum((high - close.shift()).abs(), (low - close.shift()).abs()))
+            out['ATR'] = out['TR'].rolling(window=self.config.ATR_PERIOD, min_periods=self.config.ATR_PERIOD).mean()
+            out['Volume_MA'] = volume.rolling(window=20, min_periods=20).mean()
+            out['Volume_Ratio'] = volume / (out['Volume_MA'] + 1e-6)
+            
+            out = out.replace([np.inf, -np.inf], np.nan)
+            out = out.dropna()
+            return out
+        except Exception:
+            return pd.DataFrame()
+    
+    def get_signal(self, symbol, df):
+        try:
+            self.sr_detector.detect_levels(df)
+            df_feat = self.compute_features(df)
+            if len(df_feat) < self.config.MIN_HISTORY:
+                return None
+            
+            latest = df_feat.iloc[-1]
+            close = float(latest['Close'])
+            
+            # FILTER MA200
+            ma200 = float(latest['MA200']) if not pd.isna(latest['MA200']) else close
+            if close < ma200:
+                return None
+            
+            # BOUNCE CONFIRMATION
+            prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else close
+            if close <= prev_close:
+                return None
+            
+            saham_return = calculate_return(df['Close'], 5)
+            ihsg_return = self.global_fetcher.get_momentum("IHSG")
+            volume_ratio = float(latest['Volume_Ratio']) if not pd.isna(latest['Volume_Ratio']) else 1
+            
+            is_outperform, outperform_reason, outperform_bonus = self.outperform_detector.is_outperform(
+                saham_return, ihsg_return, volume_ratio
             )
-        except Exception:
-            pass
-    return candidates
-
-
-def map_target_label_to_text(y: np.ndarray) -> np.ndarray:
-    y_arr = np.asarray(y)
-    if TARGET_MODE == "three_class":
-        mapping = {0: "TURUN", 1: "SIDEWAYS", 2: "NAIK"}
-        return np.array([mapping.get(int(v), str(v)) for v in y_arr])
-    return np.where(y_arr == 1, "NAIK", "TURUN")
-
-
-def extract_direction_probs(model, proba: np.ndarray):
-    classes = list(getattr(model, "classes_", []))
-    if TARGET_MODE == "three_class" and len(classes) >= 3:
-        p_down = proba[:, classes.index(0)] if 0 in classes else np.zeros(len(proba))
-        p_side = proba[:, classes.index(1)] if 1 in classes else np.zeros(len(proba))
-        p_up = proba[:, classes.index(2)] if 2 in classes else np.zeros(len(proba))
-        return p_down, p_side, p_up
-    # binary fallback
-    p_up = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
-    p_down = 1 - p_up
-    p_side = np.zeros(len(p_up))
-    return p_down, p_side, p_up
-
-
-def decide_signal_three_class(prob_down: float, prob_side: float, prob_up: float, threshold: float) -> str:
-    if prob_up >= max(threshold, prob_down, prob_side):
-        return "BELI"
-    if prob_down >= max(threshold, prob_up, prob_side):
-        return "JUAL"
-    return "TAHAN"
-
-
-def analyze_chart_bias(trend_filter: float, rsi: float, macd: float, close_price: float, ma20: float, ma50: float) -> str:
-    """Analisis chart realistis (Bullish/Bearish) berbasis konfluensi trend+momentum."""
-    score = 0
-    if not np.isnan(trend_filter):
-        score += 1 if trend_filter >= 0.5 else -1
-    if not np.isnan(close_price) and not np.isnan(ma20):
-        score += 1 if close_price >= ma20 else -1
-    if not np.isnan(ma20) and not np.isnan(ma50):
-        score += 1 if ma20 >= ma50 else -1
-    if not np.isnan(macd):
-        score += 1 if macd >= 0 else -1
-    if not np.isnan(rsi):
-        if rsi >= 55:
-            score += 1
-        elif rsi <= 45:
-            score -= 1
-    return "Bullish" if score >= 1 else "Bearish"
-
-
-def evaluate_model(name, model, X_train, y_train, X_val, y_val):
-    fitted = model
-    fitted.fit(X_train, y_train)
-    if USE_PROB_CALIBRATION:
-        try:
-            calibrated = CalibratedClassifierCV(estimator=fitted, method="sigmoid", cv=3)
-            calibrated.fit(X_train, y_train)
-            fitted = calibrated
-        except Exception:
-            pass
-    proba = np.nan_to_num(fitted.predict_proba(X_val), nan=0.5, posinf=1.0, neginf=0.0)
-    p_down, p_side, p_up = extract_direction_probs(fitted, proba)
-    if TARGET_MODE == "three_class":
-        val_preds = np.asarray(getattr(fitted, "classes_", np.array([0, 1, 2])))[np.argmax(proba, axis=1)]
-        threshold = 0.5
-        val_auc = float("nan")
-    else:
-        threshold = find_best_threshold(y_val, p_up)
-        val_preds = (p_up >= threshold).astype(int)
-        val_auc = safe_auc(y_val, p_up)
-    return {
-        "name": name,
-        "model": fitted,
-        "threshold": threshold,
-        "val_auc": val_auc,
-        "val_bacc": balanced_accuracy_score(y_val, val_preds),
-        "val_acc": accuracy_score(y_val, val_preds),
-    }
-
-
-def estimate_expected_return(prob_up: float, return_series: pd.Series) -> float:
-    up_returns = return_series[return_series > 0]
-    down_returns = return_series[return_series <= 0]
-    mean_up = float(up_returns.mean()) if len(up_returns) else 0.0
-    mean_down = float(down_returns.mean()) if len(down_returns) else 0.0
-    return (prob_up * mean_up) + ((1 - prob_up) * mean_down)
-
-
-def suggest_stoploss(signal: str, last_close: float, atr_value: float, prob_up: float, base_mult: float = 1.5):
-    if signal == "TAHAN":
-        return None, None, "Tidak ada stop-loss karena sinyal TAHAN"
-    confidence = abs(prob_up - 0.5) * 2
-    multiplier = base_mult + (0.7 * confidence)
-    if atr_value is None or np.isnan(atr_value) or atr_value <= 0:
-        fallback_pct = 0.03
-        if signal == "BELI":
-            stop = last_close * (1 - fallback_pct)
-            return stop, fallback_pct * 100, "Fallback 3% (ATR tidak valid)"
-        stop = last_close * (1 + fallback_pct)
-        return stop, fallback_pct * 100, "Fallback 3% (ATR tidak valid, skenario short)"
-    if signal == "BELI":
-        stop = last_close - (multiplier * atr_value)
-        stop_pct = ((last_close - stop) / last_close) * 100
-        return stop, stop_pct, f"ATR x {multiplier:.2f} di bawah harga masuk"
-    stop = last_close + (multiplier * atr_value)
-    stop_pct = ((stop - last_close) / last_close) * 100
-    return stop, stop_pct, f"ATR x {multiplier:.2f} di atas harga referensi"
-
-
-
-
-def generate_next_bej_session_timestamps(start_ts: pd.Timestamp, periods: int) -> pd.DatetimeIndex:
-    ts = pd.Timestamp(start_ts)
-    if ts.tzinfo is None:
-        ts = ts.tz_localize(JKT_TZ)
-    else:
-        ts = ts.tz_convert(JKT_TZ)
-    session_hours = [9, 10, 11, 12, 14, 15, 16]
-    out = []
-    cur = ts
-    while len(out) < periods:
-        cur = cur + pd.Timedelta(hours=1)
-        # normalisasi menit/detik ke jam bulat
-        cur = cur.replace(minute=0, second=0, microsecond=0)
-        # jika weekend, lompat ke senin jam 09:00
-        while cur.dayofweek >= 5:
-            cur = (cur + pd.Timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
-        if cur.hour in session_hours and cur.dayofweek < 5:
-            out.append(cur)
-    return pd.DatetimeIndex(out)
-
-
-def estimate_ihsg_influence_on_latest(model, latest_row: pd.DataFrame) -> tuple[float, float]:
-    """Bandingkan probabilitas dengan vs tanpa fitur IHSG pada baris terakhir."""
-    base_proba = np.nan_to_num(model.predict_proba(latest_row), nan=0.5, posinf=1.0, neginf=0.0)
-    _, _, base_up = extract_direction_probs(model, base_proba)
-    base_prob = float(base_up[0])
-    no_ihsg = latest_row.copy()
-    for c in ["IHSG_Return_1", "IHSG_Return_5", "IHSG_Volatility_10"]:
-        if c in no_ihsg.columns:
-            no_ihsg[c] = 0.0
-    no_ihsg_proba = np.nan_to_num(model.predict_proba(no_ihsg), nan=0.5, posinf=1.0, neginf=0.0)
-    _, _, no_ihsg_up = extract_direction_probs(model, no_ihsg_proba)
-    no_ihsg_prob = float(no_ihsg_up[0])
-    return base_prob, (base_prob - no_ihsg_prob)
-
-
-
-
-def suggest_tp_sl_from_sr(signal: str, entry_price: float, support: float, resistance: float, atr_value: float | None, interval: str = "1d"):
-    """
-    Menentukan take-profit dan stop-loss realistis berbasis level support/resistance.
-    - BELI: SL di bawah support (atau ATR fallback), TP mendekati resistance.
-    - JUAL: SL di atas resistance, TP mendekati support.
-    """
-    if signal == "TAHAN":
-        return None, None, "Tidak ada TP/SL karena sinyal TAHAN"
-    atr_buffer = 0.5 * atr_value if atr_value is not None and not np.isnan(atr_value) and atr_value > 0 else entry_price * 0.005
-    tp_atr_mult = 1.8 if interval in {"1h", "60m", "30m", "15m", "5m", "1m"} else 2.5
-    sl_atr_mult = 1.2 if interval in {"1h", "60m", "30m", "15m", "5m", "1m"} else 1.8
-    if signal == "BELI":
-        sl_floor = entry_price - (sl_atr_mult * atr_buffer)
-        if not np.isnan(support):
-            sl = max(support - atr_buffer, sl_floor)
-        else:
-            sl = sl_floor
-        tp_cap = entry_price + (tp_atr_mult * atr_buffer)
-        if not np.isnan(resistance):
-            tp = min(resistance - (0.2 * atr_buffer), tp_cap)
-        else:
-            tp = tp_cap
-        if tp <= entry_price:
-            tp = entry_price * 1.005
-        if sl >= entry_price:
-            sl = entry_price * 0.995
-        return tp, sl, "TP/SL dari resistance-support + buffer ATR (skenario long)"
-    # signal == JUAL (short/defensive)
-    sl_cap = entry_price + (sl_atr_mult * atr_buffer)
-    if not np.isnan(resistance):
-        sl = min(resistance + atr_buffer, sl_cap)
-    else:
-        sl = sl_cap
-    tp_floor = entry_price - (tp_atr_mult * atr_buffer)
-    if not np.isnan(support):
-        tp = max(support + (0.2 * atr_buffer), tp_floor)
-    else:
-        tp = tp_floor
-    if tp >= entry_price:
-        tp = entry_price * 0.995
-    if sl <= entry_price:
-        sl = entry_price * 1.005
-    return tp, sl, "TP/SL dari resistance-support + buffer ATR (skenario short)"
-
-
-def suggest_entry_range(signal: str, last_close: float, support: float, resistance: float, atr_value: float | None, interval: str = "1d"):
-    """Saran range entry realistis berbasis ATR + support/resistance + konteks sinyal."""
-    atr_buffer = 0.35 * atr_value if atr_value is not None and not np.isnan(atr_value) and atr_value > 0 else last_close * 0.004
-    intraday = interval in {"1h", "60m", "30m", "15m", "5m", "1m"}
-    pullback_mult = 0.8 if intraday else 1.1
-    breakout_mult = 0.6 if intraday else 0.9
-    if signal == "BELI":
-        # Entry ideal saat pullback mendekati support atau area diskon dari harga terakhir.
-        base_low = last_close - (pullback_mult * atr_buffer)
-        base_high = last_close + (0.25 * atr_buffer)
-        if not np.isnan(support):
-            low = max(support + (0.05 * atr_buffer), base_low)
-        else:
-            low = base_low
-        if not np.isnan(resistance):
-            high_cap = resistance - (0.2 * atr_buffer)
-            high = min(base_high, high_cap)
-        else:
-            high = base_high
-        if low >= high:
-            low = last_close * 0.997
-            high = last_close * 1.003
-        return low, high, "Entry BUY disarankan saat pullback (dekat support/area diskon ATR)"
-    if signal == "JUAL":
-        # Entry ideal saat rebound mendekati resistance atau area premium dari harga terakhir.
-        base_low = last_close - (0.25 * atr_buffer)
-        base_high = last_close + (breakout_mult * atr_buffer)
-        if not np.isnan(support):
-            low_floor = support + (0.2 * atr_buffer)
-            low = max(base_low, low_floor)
-        else:
-            low = base_low
-        if not np.isnan(resistance):
-            high = min(resistance - (0.05 * atr_buffer), base_high)
-        else:
-            high = base_high
-        if low >= high:
-            low = last_close * 0.997
-            high = last_close * 1.003
-        return low, high, "Entry SELL disarankan saat rebound (dekat resistance/area premium ATR)"
-    neutral_low = last_close - (0.5 * atr_buffer)
-    neutral_high = last_close + (0.5 * atr_buffer)
-    return neutral_low, neutral_high, "Mode TAHAN: entry agresif tidak disarankan, hanya range observasi"
-
-
-def forecast_next_periods(last_close: float, expected_return: float, start_date: pd.Timestamp, periods: int, interval: str,
-                          return_history: pd.Series, prob_up: float) -> pd.DataFrame:
-    """Forecast path yang lebih realistis: tidak pakai return konstan, tapi bootstrap return historis kondisional."""
-    if interval in {"1h", "60m"}:
-        future_index = generate_next_bej_session_timestamps(start_ts=start_date, periods=periods)
-        price_col = "Predicted_Close_1h"
-        ret_col = "Simulated_Return"
-    else:
-        future_index = pd.bdate_range(start=start_date + pd.Timedelta(days=1), periods=periods)
-        price_col = "Predicted_Close_1d"
-        ret_col = "Simulated_Return"
-    hist = return_history.replace([np.inf, -np.inf], np.nan).dropna()
-    if len(hist) < 10:
-        simulated_returns = np.full(periods, expected_return)
-    else:
-        up_hist = hist[hist > 0]
-        down_hist = hist[hist <= 0]
-        if len(up_hist) == 0:
-            up_hist = hist
-        if len(down_hist) == 0:
-            down_hist = hist
-        rng = np.random.default_rng(SEED)
-        simulated_returns = []
-        local_prob_up = min(max(prob_up, 0.05), 0.95)
-        for i in range(periods):
-            pick_up = rng.random() < local_prob_up
-            if pick_up:
-                r = float(rng.choice(up_hist.values))
+            
+            inflow_score, inflow_trend = self.inflow_detector.calculate_money_flow(df)
+            acc_score, acc_trend = self.inflow_detector.get_accumulation_distribution(df)
+            
+            support_price, support_touches, support_strength = self.sr_detector.get_nearest_support(close)
+            resistance_price, resistance_touches, resistance_strength = self.sr_detector.get_nearest_resistance(close)
+            dist_to_support = (close - support_price) / close * 100
+            
+            rsi = float(latest['RSI']) if not pd.isna(latest['RSI']) else 50
+            atr = float(latest['ATR']) if not pd.isna(latest['ATR']) else close * 0.02
+            ma20 = float(latest['MA20']) if not pd.isna(latest['MA20']) else close
+            ma50 = float(latest['MA50']) if not pd.isna(latest['MA50']) else close
+            ma_trend = float(latest['MA_Trend']) if not pd.isna(latest['MA_Trend']) else 0
+            
+            base_score = 0
+            if rsi < 30:
+                base_score += 3
+            elif rsi < 40:
+                base_score += 1
+            if volume_ratio > self.config.VOLUME_BOOST:
+                base_score += 2
+            elif volume_ratio > 1.2:
+                base_score += 1
+            if dist_to_support < 3:
+                if support_strength == 'KUAT':
+                    base_score += 2
+                elif support_strength == 'SEDANG':
+                    base_score += 1
+                else:
+                    base_score += 1
+            if ma_trend > 0.5:
+                base_score += 1
+            
+            global_boost = self.get_sector_boost(symbol)
+            inflow_bonus = 1 if inflow_score > 0 else -1 if inflow_score < 0 else 0
+            accumulation_bonus = 1 if acc_score > 0 else -1 if acc_score < 0 else 0
+            score = base_score + global_boost + outperform_bonus + inflow_bonus + accumulation_bonus
+            
+            ihsg_momentum = self.global_fetcher.get_momentum("IHSG")
+            if ihsg_momentum < -2.0:
+                effective_threshold = self.config.BASE_THRESHOLD + 1
+                position_multiplier = 0.5
+            elif ihsg_momentum < -1.0:
+                effective_threshold = self.config.BASE_THRESHOLD
+                position_multiplier = 0.75
             else:
-                r = float(rng.choice(down_hist.values))
-            # clamp agar tidak ekstrem dan tambah sedikit mean-reversion ke expected return
-            r = float(np.clip(r, -0.04, 0.04))
-            r = 0.7 * r + 0.3 * expected_return
-            simulated_returns.append(r)
-            # update probabilitas secara ringan supaya jalur tidak monoton
-            local_prob_up = 0.8 * local_prob_up + 0.2 * (0.5 + np.tanh(r * 20) * 0.15)
-            local_prob_up = min(max(local_prob_up, 0.2), 0.8)
-        simulated_returns = np.array(simulated_returns)
-    prices, price = [], float(last_close)
-    for r in simulated_returns:
-        price = price * (1 + r)
-        prices.append(price)
-    out = pd.DataFrame({"Date": future_index, price_col: prices, ret_col: simulated_returns})
-    out["Expected_Return_Base"] = expected_return
-    return out
+                effective_threshold = self.config.BASE_THRESHOLD
+                position_multiplier = 1.0
+            
+            sl, tp = self.calculate_atr_sl_tp(close, atr, support_price, resistance_price)
+            if sl is None or tp is None:
+                return None
+            
+            risk = close - sl
+            reward = tp - close
+            if risk <= 0 or reward <= 0:
+                return None
+            
+            rr = reward / risk
+            if rr < self.config.MIN_RR:
+                return None
+            
+            prob_up = 0.5 + (score * 0.03)
+            prob_up = min(max(prob_up, 0.3), 0.8)
+            expected_value = (prob_up * reward) - ((1 - prob_up) * risk)
+            ev_pct = (expected_value / close) * 100
+            
+            # FILTER EV 2%
+            if ev_pct < self.config.MIN_EV_PCT:
+                return None
+            
+            max_amount = self.config.MODAL * self.config.MAX_POSITION_PCT * position_multiplier
+            lot, cost = self.calculate_lot(close, risk, max_amount)
+            
+            if lot is None or cost is None:
+                return None
+            
+            sector = get_sector(symbol)
+            
+            return {
+                'Symbol': symbol,
+                'Sector': sector,
+                'Price': int(close),
+                'RSI': round(rsi, 1),
+                'Support': int(support_price),
+                'Resistance': int(resistance_price),
+                'Stop_Loss': sl,
+                'Take_Profit': tp,
+                'R/R': round(rr, 2),
+                'Prob_Up': round(prob_up, 3),
+                'EV': int(expected_value),
+                'EV_Pct': round(ev_pct, 2),
+                'Score': score,
+                'Risk': int(risk),
+                'Lot': lot,
+                'Cost': cost,
+                'Inflow': inflow_trend,
+                'Acc': acc_trend,
+                'Volume': f"{volume_ratio:.1f}x",
+                'Reasons': f"RSI {rsi:.0f}, Vol {volume_ratio:.1f}x, {support_strength}",
+                'Chart': "BULLISH" if ma20 > ma50 and rsi > 50 else "BEARISH" if ma20 < ma50 and rsi < 50 else "NETRAL"
+            }
+        except Exception:
+            return None
 
 
-def prepare_dataset(interval: str) -> tuple[pd.DataFrame, str, dict]:
-    if interval in {"1h", "60m", "30m", "15m", "5m", "1m"}:
-        periods_to_try = [INTRADAY_PERIOD] + [p for p in INTRADAY_FALLBACK_PERIODS if p != INTRADAY_PERIOD]
-        for period in periods_to_try:
-            raw = download_data(SYMBOL, interval, START, END, period)
-            raw = apply_as_of_cutoff(raw, AS_OF_DATE)
-            if raw.empty:
-                continue
-            base = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
-            feat = build_features(base, interval)
-            if feat.empty:
-                continue
-            min_required = MIN_ROWS_INTRADAY if interval in {"1h", "60m", "30m", "15m", "5m", "1m"} else MIN_ROWS_AFTER_FEATURES
-            if len(feat) >= min_required:
-                feat, info = add_market_context_features(feat, interval, START, END, period, AS_OF_DATE)
-                return feat, period, info
-        # fallback: pakai dataset terbaik yang masih memungkinkan split
-        best_feat, best_period = None, None
-        for period in periods_to_try:
-            raw = download_data(SYMBOL, interval, START, END, period)
-            raw = apply_as_of_cutoff(raw, AS_OF_DATE)
-            if raw.empty:
-                continue
-            base = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
-            feat = build_features(base, interval)
-            if feat.empty:
-                continue
-            if best_feat is None or len(feat) > len(best_feat):
-                best_feat, best_period = feat, period
-        if best_feat is not None and len(best_feat) >= 12:
-            best_feat, info = add_market_context_features(best_feat, interval, START, END, best_period, AS_OF_DATE)
-            return best_feat, f"{best_period} (best-effort)", info
-        raise ValueError(
-            f"Data intraday terlalu sedikit setelah feature engineering. Coba period lebih besar. Tried={periods_to_try}"
-        )
-    raw = download_data(SYMBOL, interval, START, END, INTRADAY_PERIOD)
-    raw = apply_as_of_cutoff(raw, AS_OF_DATE)
-    if raw.empty:
-        raise ValueError(
-            "Data harian kosong dari Yahoo Finance. Cek SYMBOL/INTERVAL, atau perlebar START/END."
-        )
-    base = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
-    feat = build_features(base, interval)
-    if feat.empty or len(feat) < MIN_ROWS_AFTER_FEATURES:
-        raise ValueError(
-            f"Data harian terlalu sedikit setelah feature engineering: {len(feat)} baris. "
-            "Coba perlebar START/END atau ganti saham dengan histori lebih lengkap."
-        )
-    feat, info = add_market_context_features(feat, interval, START, END, INTRADAY_PERIOD, AS_OF_DATE)
-    if feat.empty:
-        raise ValueError(
-            "Semua baris hilang setelah penggabungan fitur konteks market. "
-            "Coba nonaktifkan sumber eksternal yang bermasalah atau ganti simbol."
-        )
-    return feat, "start/end", info
+# =============================================================================
+# 12. ACTIVE INTRADAY ENGINE
+# =============================================================================
 
+class ActiveIntradayEngine(StrategyEngine):
+    def compute_features(self, df):
+        try:
+            out = df.copy()
+            close = out['Close']
+            high = out['High']
+            low = out['Low']
+            volume = out['Volume']
+            
+            out['Highest_High'] = high.shift(1).rolling(window=self.config.BREAKOUT_PERIOD).max()
+            out['MA_Short'] = close.rolling(window=self.config.MA_SHORT).mean()
+            out['MA_Long'] = close.rolling(window=self.config.MA_LONG).mean()
+            out['MA_Alignment'] = (out['MA_Short'] > out['MA_Long']).astype(int)
+            out['Volume_MA'] = volume.rolling(window=20).mean()
+            out['Volume_Ratio'] = volume / (out['Volume_MA'] + 1e-6)
+            out['TR'] = np.maximum(high - low, np.maximum((high - close.shift()).abs(), (low - close.shift()).abs()))
+            out['ATR'] = out['TR'].rolling(window=self.config.ATR_PERIOD).mean()
+            out['ATR_Pct'] = out['ATR'] / (close + 1e-6) * 100
+            out['Body'] = abs(close - out['Open'])
+            out['Range'] = high - low
+            out['Body_Ratio'] = out['Body'] / (out['Range'] + 1e-6)
+            out['Upper_Wick'] = (high - out[['Close', 'Open']].max(axis=1)) / (out['Range'] + 1e-6)
+            out = out.replace([np.inf, -np.inf], np.nan)
+            out = out.dropna()
+            return out
+        except Exception:
+            return pd.DataFrame()
+    
+    def check_breakout(self, row):
+        if pd.isna(row['Highest_High']) or pd.isna(row['Close']):
+            return False
+        if row['Close'] <= row['Highest_High']:
+            return False
+        if row['Volume_Ratio'] < self.config.VOLUME_BREAKOUT:
+            return False
+        if row['MA_Alignment'] != 1:
+            return False
+        return True
+    
+    def get_signal(self, symbol, df):
+        try:
+            df_feat = self.compute_features(df)
+            if len(df_feat) < 30:
+                return None
+            latest = df_feat.iloc[-1]
+            close = float(latest['Close'])
+            if not self.check_breakout(latest):
+                return None
+            atr = float(latest['ATR']) if not pd.isna(latest['ATR']) else close * 0.02
+            atr = max(atr, close * 0.005)
+            sl = close - (atr * self.config.SL_MULTIPLIER)
+            tp = close + (atr * self.config.TP_MULTIPLIER)
+            fraction = 5 if close < 100 else 10 if close < 500 else 25
+            sl = round(sl / fraction) * fraction
+            tp = round(tp / fraction) * fraction
+            if sl >= close or tp <= close:
+                return None
+            risk = close - sl
+            reward = tp - close
+            rr = reward / risk
+            if rr < self.config.MIN_RR:
+                return None
+            score = 5
+            if latest['Volume_Ratio'] > 1.5:
+                score += 1
+            if latest['Body_Ratio'] > 0.6:
+                score += 1
+            if latest['Upper_Wick'] < 0.3:
+                score += 1
+            prob_up = 0.5 + (score * 0.02)
+            prob_up = min(prob_up, 0.7)
+            expected_value = (prob_up * reward) - ((1 - prob_up) * risk)
+            ev_pct = (expected_value / close) * 100
+            if ev_pct < self.config.MIN_EV_PCT:
+                return None
+            
+            risk_amount = self.config.MODAL * (self.config.RISK_PER_TRADE_PCT / 100)
+            max_lot_by_risk = int(risk_amount / (risk * 100)) if risk > 0 else 0
+            max_lot_by_modal = int(self.config.MODAL / (close * 100))
+            max_lot = min(max_lot_by_risk, max_lot_by_modal, 5)
+            
+            if max_lot >= 1:
+                lot = max_lot
+                cost = lot * 100 * close
+                
+                if cost > self.config.MODAL:
+                    lot = int(self.config.MODAL / (close * 100))
+                    if lot >= 1:
+                        cost = lot * 100 * close
+                    else:
+                        return None
+                
+                flow = "INFLOW" if latest['Volume_Ratio'] > 1.2 else "NETRAL"
+                acc = "AKUMULASI" if latest['Volume_Ratio'] > 1.3 else "NETRAL"
+                sector = get_sector(symbol)
+                
+                return {
+                    'Symbol': symbol,
+                    'Sector': sector,
+                    'Price': int(close),
+                    'RSI': '-',
+                    'Support': int(latest['Highest_High']),
+                    'Resistance': '-',
+                    'Stop_Loss': int(sl),
+                    'Take_Profit': int(tp),
+                    'R/R': round(rr, 2),
+                    'Prob_Up': round(prob_up, 3),
+                    'EV': int(expected_value),
+                    'EV_Pct': round(ev_pct, 2),
+                    'Score': score,
+                    'Risk': int(risk),
+                    'Lot': lot,
+                    'Cost': cost,
+                    'Inflow': flow,
+                    'Acc': acc,
+                    'Volume': f"{latest['Volume_Ratio']:.1f}x",
+                    'Body_Ratio': f"{latest['Body_Ratio']:.2f}",
+                    'Upper_Wick': f"{latest['Upper_Wick']:.2f}",
+                    'Reasons': f"Breakout {self.config.BREAKOUT_PERIOD}, Vol {latest['Volume_Ratio']:.1f}x",
+                    'Chart': "BULLISH" if latest['MA_Alignment'] == 1 else "NETRAL"
+                }
+            return None
+        except Exception:
+            return None
+
+
+# =============================================================================
+# 13. MONTE CARLO SIMULATOR
+# =============================================================================
+
+class MonteCarloSimulator:
+    def __init__(self, trades, initial_capital=40000, n_simulations=1000):
+        self.trades = trades
+        self.initial_capital = initial_capital
+        self.n_simulations = n_simulations
+        self.results = []
+        self.summary = {}
+        
+    def run(self):
+        if not self.trades:
+            print("   ❌ No trades to simulate")
+            return
+        
+        print(f"\n🎲 Running Monte Carlo ({self.n_simulations} simulations)...")
+        
+        returns = [t['return_after_fee_pct'] / 100 for t in self.trades]
+        
+        for sim in range(self.n_simulations):
+            sampled_returns = random.choices(returns, k=len(returns))
+            equity = self.initial_capital
+            peak = equity
+            max_dd = 0
+            final_equity = equity
+            
+            for r in sampled_returns:
+                equity = equity * (1 + r)
+                if equity > peak:
+                    peak = equity
+                else:
+                    dd = (peak - equity) / peak * 100
+                    if dd > max_dd:
+                        max_dd = dd
+                final_equity = equity
+            
+            total_return_pct = (final_equity - self.initial_capital) / self.initial_capital * 100
+            self.results.append(total_return_pct)
+        
+        returns_pct = self.results
+        
+        self.summary = {
+            'n_simulations': self.n_simulations,
+            'mean_return': np.mean(returns_pct),
+            'median_return': np.median(returns_pct),
+            'std_return': np.std(returns_pct),
+            'percentile_5': np.percentile(returns_pct, 5),
+            'percentile_95': np.percentile(returns_pct, 95),
+            'min_return': min(returns_pct),
+            'max_return': max(returns_pct),
+            'pct_positive': np.sum(np.array(returns_pct) > 0) / self.n_simulations * 100
+        }
+        
+        print(f"   ✅ Monte Carlo complete")
+        return self.summary
+    
+    def print_results(self):
+        if not self.summary:
+            print("\n📊 No Monte Carlo results")
+            return
+        
+        print("\n" + "="*100)
+        print("🎲 MONTE CARLO SIMULATION RESULTS")
+        print("="*100)
+        print(f"Number of simulations: {self.summary['n_simulations']:,}")
+        print(f"Based on: {len(self.trades)} historical trades")
+        print(f"Initial capital: Rp {self.initial_capital:,.0f}")
+        
+        print("\n📈 RETURN DISTRIBUTION:")
+        print(f"   Mean return: {self.summary['mean_return']:.2f}%")
+        print(f"   Median return: {self.summary['median_return']:.2f}%")
+        print(f"   Std deviation: {self.summary['std_return']:.2f}%")
+        print(f"   Best case (95th percentile): {self.summary['percentile_95']:.2f}%")
+        print(f"   Worst case (5th percentile): {self.summary['percentile_5']:.2f}%")
+        print(f"   Range: {self.summary['min_return']:.2f}% to {self.summary['max_return']:.2f}%")
+        print(f"   Probability of profit: {self.summary['pct_positive']:.1f}%")
+
+
+# =============================================================================
+# 14. BACKTESTER DENGAN OPSI 5 TAHUN
+# =============================================================================
+
+class Backtester:
+    def __init__(self, config, global_fetcher, engine):
+        self.config = config
+        self.global_fetcher = global_fetcher
+        self.engine = engine
+        self.trades = []
+        self.metrics = {
+            'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
+            'total_return': 0, 'returns': [], 'returns_after_fee': []
+        }
+        self.equity_curve = []
+        self.equity_curve_after_fee = []
+        self.max_drawdown = 0
+        self.max_drawdown_after_fee = 0
+        self.max_drawdown_pct = 0
+        self.max_drawdown_pct_after_fee = 0
+        self.total_fees = 0
+        self.monte_carlo = None
+        self.entry_delay_stats = {'delay_0': 0, 'delay_1': 0, 'delay_2': 0}
+    
+    def calculate_equity_curve(self, initial_capital=100000):
+        if not self.trades:
+            return [], [], 0, 0
+        sorted_trades = sorted(self.trades, key=lambda x: x['entry_date'])
+        equity = initial_capital
+        curve = [(sorted_trades[0]['entry_date'], initial_capital)]
+        peak = initial_capital
+        max_dd = 0
+        equity_fee = initial_capital
+        curve_fee = [(sorted_trades[0]['entry_date'], initial_capital)]
+        peak_fee = initial_capital
+        max_dd_fee = 0
+        total_fees = 0
+        for trade in sorted_trades:
+            equity = equity * (1 + trade['return_pct'] / 100)
+            curve.append((trade['entry_date'], equity))
+            if equity > peak:
+                peak = equity
+            else:
+                dd = (peak - equity) / peak * 100
+                if dd > max_dd:
+                    max_dd = dd
+            return_after_fee = trade.get('return_after_fee_pct', trade['return_pct'])
+            equity_fee = equity_fee * (1 + return_after_fee / 100)
+            curve_fee.append((trade['entry_date'], equity_fee))
+            if equity_fee > peak_fee:
+                peak_fee = equity_fee
+            else:
+                dd_fee = (peak_fee - equity_fee) / peak_fee * 100
+                if dd_fee > max_dd_fee:
+                    max_dd_fee = dd_fee
+            total_fees += trade.get('fee_cost', 0)
+        self.equity_curve = curve
+        self.equity_curve_after_fee = curve_fee
+        self.max_drawdown_pct = max_dd
+        self.max_drawdown_pct_after_fee = max_dd_fee
+        self.total_fees = total_fees
+        return curve, curve_fee, max_dd, max_dd_fee
+    
+    def run_monte_carlo(self, n_simulations=1000):
+        if len(self.trades) < 20:
+            print("\n⚠️ Monte Carlo: Minimal 20 trades required")
+            return None
+        
+        self.monte_carlo = MonteCarloSimulator(
+            trades=self.trades,
+            initial_capital=self.config.MODAL,
+            n_simulations=n_simulations
+        )
+        return self.monte_carlo.run()
+    
+    def get_entry_price_with_delay(self, df, signal_idx, signal_price):
+        if not self.config.ENABLE_ENTRY_DELAY:
+            return signal_price, 0
+        
+        delay = random.choices(
+            [0, 1, 2], 
+            weights=self.config.ENTRY_DELAY_PROB
+        )[0]
+        
+        self.entry_delay_stats[f'delay_{delay}'] += 1
+        
+        if delay == 0:
+            return signal_price, delay
+        
+        max_idx = len(df) - 1
+        entry_idx = min(signal_idx + delay, max_idx)
+        
+        if entry_idx == signal_idx:
+            return signal_price, 0
+        
+        next_close = float(df.iloc[entry_idx]['Close'])
+        entry_price = max(next_close, signal_price)
+        
+        return entry_price, delay
+    
+    # =========================================================================
+    # BACKTEST 5 TAHUN UNTUK SEMUA SAHAM YANG LOLOS FILTER
+    # =========================================================================
+    def run_long(self, stocks_data, time_step=1):
+        """
+        Long backtest (5 tahun) untuk semua saham
+        time_step=1: full (2-3 jam)
+        time_step=3: quick (45-60 menit)
+        """
+        print(f"\n📊 Running {'FULL' if time_step==1 else 'QUICK'} backtest 5 tahun...")
+        print(f"   📈 Saham: {len(stocks_data)}")
+        print(f"   ⏱️  Time step: setiap {time_step} hari")
+        
+        if time_step == 1:
+            print("   ⏱️  Estimasi: 2-3 jam")
+        else:
+            print(f"   ⏱️  Estimasi: 45-60 menit")
+        
+        total_signals = 0
+        total_trades = 0
+        winning_trades = 0
+        losing_trades = 0
+        all_returns = []
+        all_returns_after_fee = []
+        
+        for symbol, df in stocks_data.items():
+            if len(df) < 60:
+                continue
+            
+            # Time sampling
+            for i in range(60, len(df) - 5, time_step):
+                try:
+                    data_hingga_i = df.iloc[:i].copy()
+                    signal = self.engine.get_signal(symbol, data_hingga_i)
+                    if signal:
+                        total_signals += 1
+                        
+                        signal_price = signal['Price']
+                        entry_price, delay_used = self.get_entry_price_with_delay(
+                            df, i, signal_price
+                        )
+                        
+                        sl = signal['Stop_Loss']
+                        tp = signal['Take_Profit']
+                        lot = signal['Lot']
+                        
+                        data_setelah = df.iloc[i + delay_used : i + delay_used + 5]
+                        
+                        if len(data_setelah) > 0:
+                            hit_sl = False
+                            hit_tp = False
+                            exit_price = entry_price
+                            
+                            for j in range(len(data_setelah)):
+                                high = data_setelah.iloc[j]['High']
+                                low = data_setelah.iloc[j]['Low']
+                                
+                                if low <= sl and high >= tp:
+                                    if random.random() < 0.5:
+                                        hit_sl = True
+                                        exit_price = sl
+                                    else:
+                                        hit_tp = True
+                                        exit_price = tp
+                                    break
+                                elif low <= sl:
+                                    hit_sl = True
+                                    exit_price = sl
+                                    break
+                                elif high >= tp:
+                                    hit_tp = True
+                                    exit_price = tp
+                                    break
+                            
+                            if not hit_sl and not hit_tp:
+                                exit_price = data_setelah.iloc[-1]['Close']
+                            
+                            return_pct = (exit_price - entry_price) / entry_price * 100
+                            return_after_fee, fee_cost = FeeConfig.adjust_return_for_fee(entry_price, exit_price, lot)
+                            
+                            self.trades.append({
+                                'symbol': symbol,
+                                'entry_date': df.index[i + delay_used],
+                                'signal_date': df.index[i],
+                                'delay': delay_used,
+                                'signal_price': signal_price,
+                                'entry_price': entry_price,
+                                'exit_price': exit_price,
+                                'return_pct': round(return_pct, 2),
+                                'return_after_fee_pct': round(return_after_fee, 2),
+                                'fee_cost': round(fee_cost, 0),
+                                'lot': lot,
+                                'hit_sl': hit_sl,
+                                'hit_tp': hit_tp
+                            })
+                            all_returns.append(return_pct)
+                            all_returns_after_fee.append(return_after_fee)
+                            total_trades += 1
+                            if return_after_fee > 0:
+                                winning_trades += 1
+                            else:
+                                losing_trades += 1
+                except Exception:
+                    continue
+        
+        self.metrics = {
+            'total_signals': total_signals,
+            'total_trades': total_trades,
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'total_return': sum(all_returns) if all_returns else 0,
+            'total_return_after_fee': sum(all_returns_after_fee) if all_returns_after_fee else 0,
+            'avg_return': np.mean(all_returns) if all_returns else 0,
+            'avg_return_after_fee': np.mean(all_returns_after_fee) if all_returns_after_fee else 0,
+            'returns': all_returns,
+            'returns_after_fee': all_returns_after_fee
+        }
+        
+        if total_trades > 0:
+            self.calculate_equity_curve(initial_capital=self.config.MODAL)
+        
+        print(f"   ✅ Backtest complete: {total_trades} trades")
+        print(f"   💰 Total fees: Rp {self.total_fees:,.0f}")
+        if self.config.ENABLE_ENTRY_DELAY:
+            print(f"   ⏱️  Entry Delay Stats: 0:{self.entry_delay_stats['delay_0']}, 1:{self.entry_delay_stats['delay_1']}, 2:{self.entry_delay_stats['delay_2']}")
+        return self.metrics
+    
+    def print_results(self):
+        if self.metrics['total_trades'] == 0:
+            print("\n📊 No backtest results")
+            return
+        
+        print("\n" + "="*100)
+        print("📊 BACKTEST RESULTS (Dengan Fee Realism)")
+        print("="*100)
+        
+        total = self.metrics['total_trades']
+        win = self.metrics['winning_trades']
+        loss = self.metrics['losing_trades']
+        win_rate = (win / total * 100) if total > 0 else 0
+        
+        print(f"Period: 5 Tahun")
+        print(f"Total Trades: {total}")
+        print(f"Winning Trades: {win}")
+        print(f"Losing Trades: {loss}")
+        print(f"Win Rate: {win_rate:.1f}%")
+        
+        if total > 0:
+            avg_return = self.metrics['avg_return']
+            avg_return_fee = self.metrics['avg_return_after_fee']
+            total_return = self.metrics['total_return']
+            total_return_fee = self.metrics['total_return_after_fee']
+            
+            print(f"\n📈 SEBELUM FEE:")
+            print(f"   Average Return: {avg_return:.2f}%")
+            print(f"   Total Return (sum): {total_return:.2f}%")
+            
+            print(f"\n📉 SETELAH FEE (dengan biaya riil):")
+            print(f"   Average Return: {avg_return_fee:.2f}%")
+            print(f"   Total Return (sum): {total_return_fee:.2f}%")
+            print(f"   Total Biaya Fee: Rp {self.total_fees:,.0f}")
+            print(f"   Fee sebagai % dari modal: {(self.total_fees/self.config.MODAL)*100:.2f}%")
+            
+            if loss > 0:
+                avg_win = np.mean([r for r in self.metrics['returns'] if r > 0]) if win > 0 else 0
+                avg_loss = abs(np.mean([r for r in self.metrics['returns'] if r < 0])) if loss > 0 else 0
+                profit_factor = (avg_win * win) / (avg_loss * loss) if avg_loss > 0 else float('inf')
+                avg_win_fee = np.mean([r for r in self.metrics['returns_after_fee'] if r > 0]) if win > 0 else 0
+                avg_loss_fee = abs(np.mean([r for r in self.metrics['returns_after_fee'] if r < 0])) if loss > 0 else 0
+                profit_factor_fee = (avg_win_fee * win) / (avg_loss_fee * loss) if avg_loss_fee > 0 else float('inf')
+                print(f"\n📊 PROFIT FACTOR:")
+                print(f"   Sebelum Fee: {profit_factor:.2f}")
+                print(f"   Setelah Fee: {profit_factor_fee:.2f}")
+        
+        if self.equity_curve:
+            start_equity = self.equity_curve[0][1]
+            end_equity = self.equity_curve[-1][1]
+            end_equity_fee = self.equity_curve_after_fee[-1][1]
+            total_return_pct = (end_equity - start_equity) / start_equity * 100
+            total_return_pct_fee = (end_equity_fee - start_equity) / start_equity * 100
+            
+            print("\n" + "-"*50)
+            print("📈 EQUITY CURVE (Compounding)")
+            print("-"*50)
+            print(f"Start Equity: Rp {start_equity:,.0f}")
+            print(f"End Equity (sebelum fee): Rp {end_equity:,.0f} ({total_return_pct:.2f}%)")
+            print(f"End Equity (setelah fee): Rp {end_equity_fee:,.0f} ({total_return_pct_fee:.2f}%)")
+            print(f"Max Drawdown (sebelum fee): {self.max_drawdown_pct:.2f}%")
+            print(f"Max Drawdown (setelah fee): {self.max_drawdown_pct_after_fee:.2f}%")
+            print(f"Number of Trades: {len(self.equity_curve)-1}")
+
+
+# =============================================================================
+# 15. STOCK SCANNER DENGAN RANKING SYSTEM
+# =============================================================================
+
+class StockScanner:
+    def __init__(self, config, global_fetcher, engine):
+        self.config = config
+        self.global_fetcher = global_fetcher
+        self.engine = engine
+        self.daily_trade_count = 0
+    
+    def calculate_portfolio_risk(self, selected_signals):
+        total_risk = 0
+        for signal in selected_signals:
+            risk_per_lot = signal['Risk'] * 100
+            total_risk += risk_per_lot * signal['Lot']
+        risk_pct = (total_risk / self.config.MODAL) * 100
+        return total_risk, risk_pct
+    
+    def filter_by_ranking(self, signals):
+        """Ranking system: EV > MIN_EV, lalu ambil top score"""
+        if not signals:
+            return []
+        
+        # Filter EV dulu
+        ev_filtered = [s for s in signals if s['EV_Pct'] >= self.config.MIN_EV_PCT]
+        
+        if not ev_filtered:
+            return []
+        
+        # Urutkan berdasarkan score (descending)
+        ranked = sorted(ev_filtered, key=lambda x: -x['Score'])
+        
+        # Ambil top sesuai max posisi
+        top_n = ranked[:self.config.MAX_PORTFOLIO]
+        
+        return top_n
+    
+    def print_global_summary(self):
+        print("\n" + "="*100)
+        print("🌍 RINGKASAN PASAR")
+        print("="*100)
+        data = []
+        for name in GLOBAL_INDICES.keys():
+            mom = self.global_fetcher.get_momentum(name)
+            trend = self.global_fetcher.get_trend(name)
+            price_str = self.global_fetcher.get_price_str(name)
+            data.append([name, price_str, f"{mom:+.2f}%", trend])
+        print(tabulate(data, headers=["Indeks", "Harga", "Momentum", "Trend"], tablefmt="grid"))
+    
+    def print_signals(self, signals):
+        if not signals:
+            print("\n❌ Tidak ada sinyal hari ini")
+            return
+        
+        print("\n" + "="*100)
+        print(f"📊 REKOMENDASI SAHAM ({len(signals)} sinyal)")
+        print("="*100)
+        print(f"Modal: Rp {self.config.MODAL:,} | Mode: {self.config.MODE.upper()}")
+        print(f"Max posisi: {self.config.MAX_PORTFOLIO}")
+        print(f"Portfolio Risk Cap: {self.config.MAX_PORTFOLIO_RISK_PCT}%")
+        print(f"Min EV: {self.config.MIN_EV_PCT}%")
+        print(f"✅ Ranking System: Top {self.config.MAX_PORTFOLIO} by Score")
+        if self.config.ENABLE_SECTOR_FILTER:
+            print(f"✅ Sektor Filter: Aktif (max 1 per sektor)")
+        if self.config.MODE == 'intraday':
+            print(f"Max trade per hari: {self.config.MAX_TRADES_PER_DAY}")
+            print(f"Risk per trade: {self.config.RISK_PER_TRADE_PCT}%")
+        print("-"*100)
+        
+        display_data = []
+        for s in signals:
+            flow_status = "💰 INFLOW" if s['Inflow'] == "INFLOW" else "💸 OUTFLOW" if s['Inflow'] == "OUTFLOW" else "⚖️ NETRAL"
+            acc_status = "📈 AKUM" if s['Acc'] == "AKUMULASI" else "📉 DIST" if s['Acc'] == "DISTRIBUSI" else "➖"
+            risk_amount = s['Risk'] * s['Lot'] * 100
+            risk_pct = (risk_amount / self.config.MODAL) * 100
+            
+            if self.config.MODE == 'intraday' and 'Body_Ratio' in s:
+                display_data.append([
+                    s['Symbol'],
+                    s['Sector'],
+                    f"Rp {s['Price']:,}",
+                    s['RSI'],
+                    f"{s['Volume']}",
+                    flow_status,
+                    acc_status,
+                    f"Rp {s['Support']:,}",
+                    f"{s['Body_Ratio']}",
+                    f"{s['Upper_Wick']}",
+                    f"Rp {s['Stop_Loss']:,}",
+                    f"Rp {s['Take_Profit']:,}",
+                    f"1:{s['R/R']}",
+                    f"{s['Prob_Up']:.0%}",
+                    f"{s['EV_Pct']}%",
+                    f"{s['Score']}",
+                    s['Chart'],
+                    f"{risk_pct:.1f}%",
+                    f"{s['Lot']} lot",
+                    f"Rp {s['Cost']:,}"
+                ])
+                headers = [
+                    "Kode", "Sektor", "Harga", "RSI", "Vol", "Flow", "Acc",
+                    "BreakLvl", "Body", "Wick", "SL", "TP", "R/R", "Prob",
+                    "EV%", "Skor", "Trend", "Risk%", "Lot", "Biaya"
+                ]
+            else:
+                display_data.append([
+                    s['Symbol'],
+                    s['Sector'],
+                    f"Rp {s['Price']:,}",
+                    s['RSI'],
+                    f"{s['Volume']}",
+                    flow_status,
+                    acc_status,
+                    f"Rp {s['Support']:,}",
+                    f"Rp {s['Resistance'] if s['Resistance'] != '-' else '-'}",
+                    f"Rp {s['Stop_Loss']:,}",
+                    f"Rp {s['Take_Profit']:,}",
+                    f"1:{s['R/R']}",
+                    f"{s['Prob_Up']:.0%}",
+                    f"{s['EV_Pct']}%",
+                    f"{s['Score']}",
+                    s['Chart'],
+                    f"{risk_pct:.1f}%",
+                    f"{s['Lot']} lot",
+                    f"Rp {s['Cost']:,}"
+                ])
+                headers = [
+                    "Kode", "Sektor", "Harga", "RSI", "Vol", "Flow", "Acc",
+                    "Support", "Resist", "SL", "TP", "R/R", "Prob",
+                    "EV%", "Skor", "Trend", "Risk%", "Lot", "Biaya"
+                ]
+        
+        print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
+        
+        total_risk, risk_pct = self.calculate_portfolio_risk(signals)
+        print(f"\n📊 Total Portfolio Risk: Rp {total_risk:,} ({risk_pct:.2f}% dari modal)")
+    
+    def print_portfolio_guide(self, signals):
+        if not signals:
+            return
+        print("\n" + "="*100)
+        print("📊 PANDUAN PORTOFOLIO")
+        print("="*100)
+        print(f"Anda bisa membeli maksimal {self.config.MAX_PORTFOLIO} saham")
+        print(f"Total risk: {self.config.MAX_PORTFOLIO_RISK_PCT}% dari modal (Rp {self.config.MODAL * self.config.MAX_PORTFOLIO_RISK_PCT / 100:,.0f})")
+        print(f"✅ Ranking: Top {self.config.MAX_PORTFOLIO} berdasarkan Score")
+        
+        if self.config.ENABLE_SECTOR_FILTER:
+            print(f"✅ Diversifikasi sektor: Maksimal 1 saham per sektor")
+        
+        if self.config.MODE == 'intraday':
+            print(f"\n📋 CHECKLIST KONFIRMASI MANUAL (30 detik):")
+            print("1. Candle breakout bukan long upper wick? (Wick < 0.3 ideal)")
+            print("2. Tidak di resistance daily besar? (cek chart)")
+            print("3. Spread tidak melebar? (harga wajar)")
+            print("4. IHSG tidak dump > -1.5%?")
+            print("✅ Jika minimal 3 dari 4 lolos → eksekusi")
+        
+        print("\nKombinasi optimal (Top by Score):")
+        total_risk_used = 0
+        for i, s in enumerate(signals, 1):
+            risk_amount = s['Risk'] * s['Lot'] * 100
+            if total_risk_used + risk_amount <= self.config.MODAL * self.config.MAX_PORTFOLIO_RISK_PCT / 100:
+                print(f"  {i}. {s['Symbol']} ({s['Sector']}): Score {s['Score']}, EV {s['EV_Pct']}%, Risk Rp {risk_amount:,}")
+                total_risk_used += risk_amount
+            else:
+                print(f"  {i}. {s['Symbol']} ({s['Sector']}): Tidak cukup risk budget")
+        
+        print(f"\n💰 Total risk digunakan: Rp {total_risk_used:,} ({total_risk_used/self.config.MODAL*100:.1f}% dari modal)")
+
+
+# =============================================================================
+# 16. MAIN PROGRAM
+# =============================================================================
 
 def main():
-    mode_config = get_runtime_mode_config()
-    interval = mode_config["interval"]
-    df, data_window_used, market_info = prepare_dataset(interval)
-    train_df, val_df, test_df = split_time_series(df)
-    feature_cols = [c for c in df.columns if c != "Target"]
-    X_train, y_train = train_df[feature_cols], train_df["Target"].to_numpy()
-    X_val, y_val = val_df[feature_cols], val_df["Target"].to_numpy()
-    X_test, y_test = test_df[feature_cols], test_df["Target"].to_numpy()
-    X_train = replace_inf_with_nan(X_train)
-    X_val = replace_inf_with_nan(X_val)
-    X_test = replace_inf_with_nan(X_test)
-    candidates = get_model_candidates()
-    evaluations = [evaluate_model(name, model, X_train, y_train, X_val, y_val) for name, model in candidates.items()]
-    best = max(evaluations, key=lambda x: (x["val_bacc"], np.nan_to_num(x["val_auc"], nan=-1.0)))
-    best_model = best["model"]
-    best_threshold = best["threshold"]
-    test_proba = np.nan_to_num(best_model.predict_proba(X_test), nan=0.5, posinf=1.0, neginf=0.0)
-    probs_down, probs_side, probs_up = extract_direction_probs(best_model, test_proba)
-    if TARGET_MODE == "three_class":
-        preds = np.asarray(getattr(best_model, "classes_", np.array([0, 1, 2])))[np.argmax(test_proba, axis=1)]
+    print("\n" + "="*60)
+    print("🏦 IDX STOCK SCANNER - DUAL ENGINE FINAL")
+    print("   Swing + Intraday + Ranking System")
+    print("   + Backtest 5 Tahun Opsional")
+    print("="*60)
+    
+    print("\nPilih mode trading:")
+    print("1. Intraday (Active Micro Momentum)")
+    print("2. Mingguan (Mean Reversion)")
+    
+    while True:
+        mode_choice = input("Pilihan (1/2): ").strip()
+        if mode_choice == '1':
+            mode = 'intraday'
+            break
+        elif mode_choice == '2':
+            mode = 'mingguan'
+            break
+        else:
+            print("❌ Pilih 1 atau 2")
+    
+    while True:
+        try:
+            modal_input = input("\nModal (Rp 10,000 - 5,000,000): ").strip()
+            modal = int(modal_input.replace('.', '').replace(',', ''))
+            if 10000 <= modal <= 5000000:
+                break
+            print("❌ Modal harus 10,000 - 5,000,000")
+        except:
+            print("❌ Input tidak valid")
+    
+    config = Config(modal, mode)
+    
+    if config.ENABLE_RANDOM_SLIPPAGE:
+        FeeConfig.SLIPPAGE_MODE = 'random'
     else:
-        preds = (probs_up >= best_threshold).astype(int)
-    print(f"Mode trading : {mode_config['name']} ({mode_config['horizon_note']})")
-    print(f"Mode interval: {interval}")
-    print(f"Data window used: {data_window_used}")
-    print(f"As-of cutoff: {AS_OF_DATE if AS_OF_DATE else 'latest available'}")
-    print(f"IHSG context used: {market_info.get('ihsg_used')}")
-    print(f"Global markets used: {market_info.get('global_markets_used', 0)}/{len(GLOBAL_INDEX_TICKERS)}")
-    print(f"Commodities used  : {market_info.get('commodities_used', 0)}/{len(COMMODITY_TICKERS)}")
-    print(f"INDO VIX source : {market_info.get('indovix_symbol') if market_info.get('indovix_symbol') else 'not found (filled neutral)'}")
-    print(f"USD/IDR context: {market_info.get('currency_used')}")
-    print(f"Timestamp aligned: {market_info.get('timestamps_aligned')}")
-    print(f"VIX fear rules  : spike>={VIX_SPIKE_THRESHOLD:.2%}, high_level>={VIX_HIGH_LEVEL}")
-    print(f"BEI sessions    : {SESSION1_START}-{SESSION1_END} & {SESSION2_START}-{SESSION2_END} ({JKT_TZ})")
-    print("Model candidates (validation):")
-    for ev in evaluations:
-        auc_text = "nan" if np.isnan(ev["val_auc"]) else f"{ev['val_auc']:.4f}"
-        print(
-            f"- {ev['name']}: AUC={auc_text}, "
-            f"BalancedAcc={ev['val_bacc']:.4f}, Acc={ev['val_acc']:.4f}, Threshold={ev['threshold']:.2f}"
-        )
-    print(f"\nModel terpilih: {best['name']}")
-    print(f"Best threshold (validation): {best_threshold:.2f}")
-    print(f"Test accuracy: {accuracy_score(y_test, preds):.4f}")
-    print(f"Test balanced accuracy: {balanced_accuracy_score(y_test, preds):.4f}")
-    if TARGET_MODE == "three_class":
-        print("Test ROC-AUC: nan (three_class mode)")
+        FeeConfig.SLIPPAGE_MODE = 'fixed'
+    
+    global_fetcher = GlobalIndicesFetcher()
+    global_fetcher.fetch_all(config)
+    
+    if mode == 'intraday':
+        engine = ActiveIntradayEngine(config, global_fetcher)
+        print("\n🚀 Menggunakan ACTIVE INTRADAY ENGINE")
     else:
-        print(f"Test ROC-AUC: {safe_auc(y_test, probs_up):.4f}" if len(np.unique(y_test)) > 1 else "Test ROC-AUC: nan")
-    print(confusion_matrix(y_test, preds))
-    print(classification_report(y_test, preds, digits=4, zero_division=0))
-    result = pd.DataFrame(
-        {
-            "Date": test_df.index,
-            "Close": test_df["Close"].to_numpy().reshape(-1),
-            "Prob_Naik": probs_up,
-            "Prob_Turun": probs_down,
-            "Aktual": map_target_label_to_text(y_test),
-            "INDOVIX_Level": test_df["INDOVIX_Level"].to_numpy().reshape(-1) if "INDOVIX_Level" in test_df.columns else np.nan,
-            "INDOVIX_Change_1": test_df["INDOVIX_Change_1"].to_numpy().reshape(-1) if "INDOVIX_Change_1" in test_df.columns else np.nan,
-            "Buy_Volume_Anomaly": test_df["Buy_Volume_Anomaly"].to_numpy().reshape(-1) if "Buy_Volume_Anomaly" in test_df.columns else np.nan,
-            "Sell_Volume_Anomaly": test_df["Sell_Volume_Anomaly"].to_numpy().reshape(-1) if "Sell_Volume_Anomaly" in test_df.columns else np.nan,
-            "Net_Volume_Anomaly": test_df["Net_Volume_Anomaly"].to_numpy().reshape(-1) if "Net_Volume_Anomaly" in test_df.columns else np.nan,
-            "Volume_Anomaly_Spike": test_df["Volume_Anomaly_Spike"].to_numpy().reshape(-1) if "Volume_Anomaly_Spike" in test_df.columns else 0,
-            "Support_Level": test_df["Support_Level"].to_numpy().reshape(-1) if "Support_Level" in test_df.columns else np.nan,
-            "Resistance_Level": test_df["Resistance_Level"].to_numpy().reshape(-1) if "Resistance_Level" in test_df.columns else np.nan,
-            "Trend_Filter": test_df["Trend_Filter"].to_numpy().reshape(-1) if "Trend_Filter" in test_df.columns else np.nan,
-            "RSI": test_df["RSI"].to_numpy().reshape(-1) if "RSI" in test_df.columns else np.nan,
-            "MACD": test_df["MACD"].to_numpy().reshape(-1) if "MACD" in test_df.columns else np.nan,
-            "MA20": test_df["MA20"].to_numpy().reshape(-1) if "MA20" in test_df.columns else np.nan,
-            "MA50": test_df["MA50"].to_numpy().reshape(-1) if "MA50" in test_df.columns else np.nan,
-        }
-    )
-    if TARGET_MODE == "three_class":
-        result["Prob_Sideways"] = probs_side
-        result["Signal_Dasar"] = result.apply(lambda r: decide_signal_three_class(float(r["Prob_Turun"]), float(r["Prob_Sideways"]), float(r["Prob_Naik"]), best_threshold), axis=1)
+        engine = SwingEngine(config, global_fetcher)
+        print("\n📈 Menggunakan SWING ENGINE")
+    
+    fetcher = CachedDataFetcher()
+    scanner = StockScanner(config, global_fetcher, engine)
+    
+    print(f"\n💰 Modal: Rp {modal:,}")
+    print(f"📊 Mode: {mode.upper()}")
+    print(f"📊 Interval: {config.INTERVAL}")
+    print(f"📊 Max posisi: {config.MAX_PORTFOLIO}")
+    print(f"📊 Min Price: Rp {config.MIN_PRICE}")
+    print(f"📊 Max Spread: {config.MAX_SPREAD_PCT}%")
+    print(f"📊 Min EV: {config.MIN_EV_PCT}%")
+    print(f"📊 Filter likuiditas: Min {config.MIN_AVG_VOLUME:,} lembar")
+    print(f"📊 Portfolio Risk Cap: {config.MAX_PORTFOLIO_RISK_PCT}%")
+    if config.ENABLE_SECTOR_FILTER:
+        print(f"📊 Sektor Filter: Aktif (max 1 per sektor)")
+    if mode == 'mingguan':
+        print(f"📊 Support Window: {config.SUPPORT_PERIOD} hari")
+        print(f"📊 Trend Filter: MA200")
+        print(f"📊 Bounce Confirmation: Aktif")
+    if config.ENABLE_ENTRY_DELAY:
+        print(f"⏱️  Entry Delay: Aktif (0:50%, 1:30%, 2:20%)")
+    if config.ENABLE_RANDOM_SLIPPAGE:
+        print(f"💰 Random Slippage: Aktif (Buy: 0.05-0.2%, Sell: 0.1-0.3%)")
+    
+    print(f"\n📥 Download {len(STOCKBIT_UNIVERSE)} stocks...")
+    stocks_data = {}
+    start_time = time.time()
+    
+    for i, symbol in enumerate(STOCKBIT_UNIVERSE):
+        df = fetcher.fetch(symbol, config)
+        if df is not None:
+            stocks_data[symbol] = df
+        if (i+1) % 100 == 0:
+            elapsed = time.time() - start_time
+            print(f"   Progress: {i+1}/{len(STOCKBIT_UNIVERSE)} - {len(stocks_data)} ditemukan")
+    
+    elapsed = time.time() - start_time
+    print(f"\n✅ Selesai dalam {elapsed:.1f} detik")
+    fetcher.print_stats()
+    
+    if stocks_data:
+        print(f"\n📊 Menganalisis {len(stocks_data)} saham...")
+        signals = []
+        
+        for symbol, df in stocks_data.items():
+            signal = engine.get_signal(symbol, df)
+            if signal:
+                signals.append(signal)
+        
+        print(f"✅ Ditemukan {len(signals)} sinyal mentah")
+        
+        # RANKING SYSTEM
+        ranked_signals = scanner.filter_by_ranking(signals)
+        print(f"✅ Setelah ranking: {len(ranked_signals)} sinyal terbaik")
+        
+        scanner.print_global_summary()
+        scanner.print_signals(ranked_signals)
+        scanner.print_portfolio_guide(ranked_signals)
+        
+        # =================================================================
+        # OPSI BACKTEST 5 TAHUN
+        # =================================================================
+        print("\n" + "="*100)
+        print("📊 BACKTEST 5 TAHUN OPTION")
+        print("="*100)
+        print(f"Data tersedia: {len(stocks_data)} saham")
+        print("Pilih mode backtest:")
+        print("1. Quick (time step 3) - 45-60 menit")
+        print("2. Full (setiap hari) - 2-3 jam")
+        print("0. Lewati")
+        
+        bt_choice = input("Pilihan (0/1/2): ").strip()
+        
+        if bt_choice in ['1', '2']:
+            time_step = 3 if bt_choice == '1' else 1
+            
+            print("\n" + "="*100)
+            print(f"📊 BACKTEST 5 TAHUN ({'QUICK' if time_step==3 else 'FULL'})")
+            print("="*100)
+            
+            backtester = Backtester(config, global_fetcher, engine)
+            backtester.run_long(stocks_data, time_step=time_step)
+            backtester.print_results()
+            
+            if len(backtester.trades) >= 20:
+                print("\n" + "="*100)
+                print("🎲 MONTE CARLO SIMULATION")
+                print("="*100)
+                backtester.run_monte_carlo()
+                backtester.monte_carlo.print_results()
+            else:
+                print(f"\n⚠️ Monte Carlo: Minimal 20 trades required (current: {len(backtester.trades)})")
+        else:
+            print("\n✅ Backtest dilewati.")
+        
     else:
-        result["Prob_Sideways"] = 0.0
-        result["Signal_Dasar"] = result["Prob_Naik"].apply(lambda p: decide_signal(float(p), best_threshold))
-    result["Analisis_Chart"] = result.apply(
-        lambda r: analyze_chart_bias(
-            trend_filter=float(r["Trend_Filter"]) if "Trend_Filter" in result.columns else np.nan,
-            rsi=float(r["RSI"]) if "RSI" in result.columns else np.nan,
-            macd=float(r["MACD"]) if "MACD" in result.columns else np.nan,
-            close_price=float(r["Close"]),
-            ma20=float(r["MA20"]) if "MA20" in result.columns else np.nan,
-            ma50=float(r["MA50"]) if "MA50" in result.columns else np.nan,
-        ),
-        axis=1,
-    )
-    result["Catatan_VolumeFlow"] = result.apply(
-        lambda r: interpret_volume_flow(
-            float(r["Net_Volume_Anomaly"]) if "Net_Volume_Anomaly" in result.columns else np.nan,
-            float(r["Buy_Volume_Anomaly"]) if "Buy_Volume_Anomaly" in result.columns else np.nan,
-            float(r["Sell_Volume_Anomaly"]) if "Sell_Volume_Anomaly" in result.columns else np.nan,
-        ),
-        axis=1,
-    )
-    result[["Signal_Akhir", "Catatan_VIX"]] = result.apply(
-        lambda r: pd.Series(
-            adjust_signal_with_vix_fear(
-                signal=r["Signal_Dasar"],
-                prob_up=float(r["Prob_Naik"]),
-                vix_level=float(r["INDOVIX_Level"]) if "INDOVIX_Level" in result.columns else np.nan,
-                vix_change_1=float(r["INDOVIX_Change_1"]) if "INDOVIX_Change_1" in result.columns else np.nan,
-            )
-        ),
-        axis=1,
-    )
-    result_display = result[
-        [
-            "Date",
-            "Close",
-            "Prob_Naik",
-            "Prob_Turun",
-            "Prob_Sideways",
-            "Aktual",
-            "Analisis_Chart",
-            "INDOVIX_Level",
-            "Catatan_VolumeFlow",
-            "Signal_Akhir",
-        ]
-    ]
-    print("\nContoh output (10 baris terakhir):")
-    print(result_display.tail(10).to_string(index=False))
-    latest_row = replace_inf_with_nan(df[feature_cols].tail(1))
-    latest_proba = np.nan_to_num(best_model.predict_proba(latest_row), nan=0.5, posinf=1.0, neginf=0.0)
-    prob_down_arr, prob_side_arr, prob_up_arr = extract_direction_probs(best_model, latest_proba)
-    prob_up_now = float(prob_up_arr[0])
-    prob_down_now = float(prob_down_arr[0])
-    prob_side_now = float(prob_side_arr[0])
-    prob_with_ihsg, delta_ihsg = estimate_ihsg_influence_on_latest(best_model, latest_row)
-    signal_now_base = decide_signal_three_class(prob_down_now, prob_side_now, prob_up_now, best_threshold) if TARGET_MODE == "three_class" else decide_signal(prob_up_now, best_threshold)
-    vix_level_now = float(df["INDOVIX_Level"].iloc[-1]) if "INDOVIX_Level" in df.columns else np.nan
-    vix_change_now = float(df["INDOVIX_Change_1"].iloc[-1]) if "INDOVIX_Change_1" in df.columns else np.nan
-    buy_vol_anom_now = float(df["Buy_Volume_Anomaly"].iloc[-1]) if "Buy_Volume_Anomaly" in df.columns else np.nan
-    sell_vol_anom_now = float(df["Sell_Volume_Anomaly"].iloc[-1]) if "Sell_Volume_Anomaly" in df.columns else np.nan
-    net_vol_anom_now = float(df["Net_Volume_Anomaly"].iloc[-1]) if "Net_Volume_Anomaly" in df.columns else np.nan
-    vol_flow_note = interpret_volume_flow(net_vol_anom_now, buy_vol_anom_now, sell_vol_anom_now)
-    support_now = float(df["Support_Level"].iloc[-1]) if "Support_Level" in df.columns else np.nan
-    resistance_now = float(df["Resistance_Level"].iloc[-1]) if "Resistance_Level" in df.columns else np.nan
-    sr_note, sr_bias = interpret_sr_breakout(float(df["Close"].iloc[-1]), support_now, resistance_now)
-    signal_now, vix_note = adjust_signal_with_vix_fear(signal_now_base, prob_up_now, vix_level_now, vix_change_now)
-    if sr_bias == -1 and signal_now == "BELI":
-        signal_now = "TAHAN"
-    if sr_bias == 1 and signal_now == "JUAL":
-        signal_now = "TAHAN"
-    atr_now = float(df["ATR"].iloc[-1]) if "ATR" in df.columns else np.nan
-    stoploss_price, stoploss_pct, stoploss_note = suggest_stoploss(
-        signal=signal_now,
-        last_close=float(df["Close"].iloc[-1]),
-        atr_value=atr_now,
-        prob_up=prob_up_now,
-    )
-    tp_price, sl_price_sr, tp_sl_note = suggest_tp_sl_from_sr(
-        signal=signal_now,
-        entry_price=float(df["Close"].iloc[-1]),
-        support=support_now,
-        resistance=resistance_now,
-        atr_value=atr_now,
-        interval=interval,
-    )
-    entry_low, entry_high, entry_note = suggest_entry_range(
-        signal=signal_now,
-        last_close=float(df["Close"].iloc[-1]),
-        support=support_now,
-        resistance=resistance_now,
-        atr_value=atr_now,
-        interval=interval,
-    )
-    print("\nSignal saat ini:")
-    print(f"Timestamp terakhir   : {df.index[-1]}")
-    print(f"Prob_Naik saat ini   : {prob_up_now:.4f}")
-    print(f"Prob_Turun saat ini  : {prob_down_now:.4f}")
-    if TARGET_MODE == "three_class":
-        print(f"Prob_Sideways kini   : {prob_side_now:.4f}")
-    print(f"IHSG impact (delta)  : {delta_ihsg:+.4f} pada Prob_Naik (vs IHSG=0)")
-    print(f"Signal dasar         : {signal_now_base}")
-    print(f"INDO VIX level/change: {vix_level_now:.4f} / {vix_change_now:.4f}")
-    print(f"Signal saat ini      : {signal_now}")
-    print(f"Catatan INDO VIX     : {vix_note}")
-    print(f"Volume anomaly (B/S/N): {buy_vol_anom_now:.4f} / {sell_vol_anom_now:.4f} / {net_vol_anom_now:.4f}")
-    print(f"Catatan volume flow  : {vol_flow_note}")
-    print(f"Support/Resistance   : {support_now:.2f} / {resistance_now:.2f}")
-    print(f"Saran range entry    : {entry_low:.2f} - {entry_high:.2f}")
-    print(f"Catatan entry range  : {entry_note}")
-    print(f"Catatan breakout SR  : {sr_note}")
-    if stoploss_price is not None:
-        print(f"Stop-loss saran (ATR): {stoploss_price:.2f} ({stoploss_pct:.2f}%)")
-    print(f"Catatan stop-loss    : {stoploss_note}")
-    if tp_price is not None and sl_price_sr is not None:
-        rr = abs((tp_price - float(df["Close"].iloc[-1])) / (float(df["Close"].iloc[-1]) - sl_price_sr)) if signal_now == "BELI" and float(df["Close"].iloc[-1]) != sl_price_sr else None
-        if signal_now == "JUAL":
-            rr = abs((float(df["Close"].iloc[-1]) - tp_price) / (sl_price_sr - float(df["Close"].iloc[-1]))) if sl_price_sr != float(df["Close"].iloc[-1]) else None
-        print(f"Take-profit (SR)     : {tp_price:.2f}")
-        print(f"Stop-loss (SR)       : {sl_price_sr:.2f}")
-        if rr is not None and np.isfinite(rr):
-            print(f"Risk/Reward approx   : 1:{rr:.2f}")
-    print(f"Catatan TP/SL SR     : {tp_sl_note}")
-    expected_ret = estimate_expected_return(prob_up_now, train_df["Return"])
-    forecast = forecast_next_periods(
-        last_close=float(df["Close"].iloc[-1]),
-        expected_return=expected_ret,
-        start_date=df.index[-1],
-        periods=mode_config["forecast_periods"],
-        interval=interval,
-        return_history=train_df["Return"],
-        prob_up=prob_up_now,
-    )
-    print(f"\n{mode_config['forecast_label']}:")
-    print(forecast.to_string(index=False))
+        print(f"\n❌ Tidak ada data")
+    
+    print("\n" + "="*100)
+    print("📝 CARA EKSEKUSI:")
+    print("="*100)
+    print("1. Pilih saham yang ingin dibeli")
+    print("2. Gunakan LIMIT ORDER di harga ≤ rekomendasi")
+    print("3. Pasang Stop Loss sesuai level")
+    print("4. Target Take Profit sesuai level")
+    print("5. Patuhi risk management")
+    if mode == 'intraday':
+        print("6. WAJIB CLOSE sebelum jam 15:50 (no overnight)")
+        print("7. Max 3 trade per hari - disiplin!")
+        print("8. Jika loss 2x berturut-turut, stop trading hari itu")
+    print("\n✅ Selamat trading!")
 
 if __name__ == "__main__":
     main()
