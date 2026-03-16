@@ -3866,16 +3866,17 @@ class SwingEngine(BaseStrategyEngine):
             return None
 
 # =============================================================================
-# 23. INTRADAY GORENGAN ENGINE (DENGAN PARAMETER ADAPTIVE) - FIXED + TURNOVER
+# 23. INTRADAY GORENGAN ENGINE (VERSI BPJS DENGAN PARAMETER FLEKSIBEL)
 # =============================================================================
 
 class IntradayGorenganEngine(BaseStrategyEngine):
     def __init__(self, config, global_fetcher, news_analyzer=None):
         super().__init__(config, global_fetcher, engine_type='gorengan')
+        self.config = config  # simpan config untuk akses parameter
         self.atr_period = getattr(config, 'ATR_PERIOD', 14)
-        self.min_volume_spike = getattr(config, 'MIN_VOLUME_SPIKE', 2.0)
-        self.base_min_rr = getattr(config, 'MIN_RR', 1.0)
-        self.min_ev_pct = getattr(config, 'MIN_EV_PCT', 1.5)
+        self.min_volume_spike = config.MIN_VOLUME_SPIKE
+        self.base_min_rr = config.MIN_RR
+        self.min_ev_pct = config.MIN_EV_PCT
         self.modal_adapter = ModalAdapter(config.MODAL, self.engine_type)
         self.adaptive_params = None
         self.confidence_weights = {
@@ -3886,6 +3887,10 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             'historical': 0.10
         }
         self.news_analyzer = news_analyzer
+        self.warehouse = None
+
+    def set_warehouse(self, warehouse):
+        self.warehouse = warehouse
 
     def set_regime_detector(self, regime_detector):
         super().set_regime_detector(regime_detector)
@@ -3899,6 +3904,9 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             low = out['Low']
             volume = out['Volume']
             open_price = out['Open']
+
+            out['MA5'] = close.rolling(window=5, min_periods=5).mean()
+            out['MA5_ratio'] = close / out['MA5']
             out['Highest_High_5'] = high.rolling(window=5).max()
             out['Turnover'] = close * volume
             out['Turnover_MA'] = out['Turnover'].rolling(window=20).mean()
@@ -3909,31 +3917,55 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             out['Range'] = high - low
             out['Body_Ratio'] = out['Body'] / (out['Range'] + 1e-6)
             out['Day_Change'] = (close / open_price - 1) * 100
+
             out = out.replace([np.inf, -np.inf], np.nan)
             return out.shift(1)
         except Exception as e:
             logger.error(f"Error in calculate_features: {str(e)}")
             return pd.DataFrame()
 
-    def check_breakout(self, row: pd.Series, modal: float) -> bool:
-        if pd.isna(row['Highest_High_5']) or pd.isna(row['Close']):
-            return False
-        if row['Close'] <= row['Highest_High_5']:
-            return False
-        min_vol_spike = self.min_volume_spike
-        if self.regime_detector and self.regime_detector.current_regime == "BEAR":
-            min_vol_spike = 1.5
-        if row['Turnover_Ratio'] < min_vol_spike:
-            return False
-        min_turnover_mult = 3
-        if self.regime_detector and self.regime_detector.current_regime == "BEAR":
-            min_turnover_mult = 2
-        min_turnover = modal * min_turnover_mult
-        if row['Turnover'] < min_turnover:
-            return False
-        if row['Day_Change'] > 20:
-            return False
-        return True
+    def is_bpjs_candidate(self, row: pd.Series, modal: float) -> Tuple[bool, str]:
+        """
+        Memeriksa apakah saham memenuhi kriteria BPJS dengan parameter dari config.
+        """
+        day_change = row.get('Day_Change')
+        if pd.isna(day_change):
+            return False, "Day change tidak tersedia"
+        if day_change < self.config.MIN_DAY_CHANGE:
+            return False, f"Kenaikan terlalu kecil: {day_change:.1f}% (<{self.config.MIN_DAY_CHANGE}%)"
+        if day_change > 12:
+            return False, f"Kenaikan terlalu besar: {day_change:.1f}% (>12%)"
+
+        turnover_ratio = row.get('Turnover_Ratio')
+        if pd.isna(turnover_ratio):
+            return False, "Turnover ratio tidak tersedia"
+        if turnover_ratio < self.config.MIN_VOLUME_SPIKE:
+            return False, f"Volume spike terlalu rendah: {turnover_ratio:.1f}x (<{self.config.MIN_VOLUME_SPIKE}x)"
+
+        open_price = row.get('Open')
+        close_price = row.get('Close')
+        if pd.isna(open_price) or pd.isna(close_price):
+            return False, "Harga open/close tidak tersedia"
+        if close_price < open_price * 1.02:
+            return False, f"Harga tutup {close_price} < 1.02× open {open_price}"
+
+        ma5 = row.get('MA5')
+        if pd.isna(ma5):
+            return False, "MA5 tidak tersedia"
+        if close_price < ma5 * self.config.MIN_PRICE_TO_MA5:
+            return False, f"Harga {close_price} < {self.config.MIN_PRICE_TO_MA5}× MA5 {ma5:.0f}"
+
+        turnover = row.get('Turnover')
+        if pd.isna(turnover):
+            return False, "Turnover tidak tersedia"
+        min_turnover_modal = max(modal * 100, self.modal_adapter.get_filter_turnover()[0])
+        if turnover < min_turnover_modal:
+            return False, f"Turnover Rp {turnover/1e6:.1f}Jt < minimal Rp {min_turnover_modal/1e6:.1f}Jt"
+
+        if close_price > 1200:
+            return False, f"Harga {close_price} > 1200 (terlalu mahal untuk BPJS)"
+
+        return True, "OK"
 
     def get_adaptive_parameters(self, df, current_price, latest_logic):
         if self.adaptive_params is None:
@@ -3949,7 +3981,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             ma50=current_price,
             ma200=current_price,
             base_sl_multiplier=1.0,
-            base_tp_multiplier=1.5,
+            base_tp_multiplier=2.0,
             base_min_rr=self.base_min_rr
         )
         if turnover_ratio > 4.0:
@@ -3976,6 +4008,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             spike_score = 40
         factors['volume_spike'] = spike_score
         total_score += spike_score * self.confidence_weights['volume_spike']
+
         day_change = signal_data.get('day_change', 0)
         if day_change > 15:
             momentum_score = 90
@@ -3991,6 +4024,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             momentum_score = 30
         factors['momentum'] = momentum_score
         total_score += momentum_score * self.confidence_weights['momentum']
+
         turnover = signal_data.get('turnover', 0)
         modal = signal_data.get('modal', 1)
         turnover_ratio_to_modal = turnover / modal if modal > 0 else 0
@@ -4006,6 +4040,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             turnover_score = 35
         factors['turnover'] = turnover_score
         total_score += turnover_score * self.confidence_weights['turnover']
+
         body_ratio = signal_data.get('body_ratio', 0.5)
         if body_ratio > 0.8:
             candle_score = 90
@@ -4015,10 +4050,12 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             candle_score = 50
         factors['candle'] = candle_score
         total_score += candle_score * self.confidence_weights['candle']
+
         historical_win_rate = signal_data.get('historical_win_rate', 35)
         hist_score = min(100, max(0, historical_win_rate))
         factors['historical'] = hist_score
         total_score += hist_score * self.confidence_weights['historical']
+
         if self.regime_detector:
             regime_confidence = self.regime_detector.confidence
             if self.regime_detector.current_regime == "BEAR":
@@ -4052,28 +4089,33 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'min_rr': self.base_min_rr
             })
             min_rr = regime_params.get('min_rr', self.base_min_rr)
+
+            # Filter harga dari modal adapter
             min_price, max_price = self.modal_adapter.get_filter_harga()
             if close_logic < min_price or close_logic > max_price:
                 return None
-            # Filter turnover
+
+            # Filter turnover dasar (dari modal adapter)
             min_turn, min_avg_turn = self.modal_adapter.get_filter_turnover()
             last_turnover = float(latest_logic['Turnover']) if not pd.isna(latest_logic['Turnover']) else 0
             avg_turnover_20 = latest_logic['Turnover_MA'] if not pd.isna(latest_logic['Turnover_MA']) else 0
             if last_turnover < min_turn or avg_turnover_20 < min_avg_turn:
                 return None
+
+            # Filter spread
             spread = calculate_spread_pct(df)
             max_spread = self.modal_adapter.get_filter_spread()
             if spread > max_spread:
                 return None
-            if not self.check_breakout(latest_logic, self.risk_manager.modal):
+
+            # ===== FILTER BPJS (ADAPTIF MODAL) =====
+            is_candidate, reason = self.is_bpjs_candidate(latest_logic, self.risk_manager.modal)
+            if not is_candidate:
+                # Bisa di-uncomment untuk debugging
+                # print(f"   {symbol} gagal BPJS: {reason}")
                 return None
-            atr = self.risk_manager.calculate_atr_in_rupiah(df)
-            min_atr_gorengan = close_logic * 0.02
-            atr = max(atr, min_atr_gorengan)
-            adaptive_params = self.get_adaptive_parameters(df, close_logic, latest_logic)
-            sl_mult = adaptive_params['sl_multiplier']
-            tp_mult = adaptive_params['tp_multiplier']
-            min_rr = adaptive_params['min_rr']
+
+            # ===== HITUNG STOP LOSS DAN TAKE PROFIT =====
             if close_logic < 100:
                 fraction = 5
             elif close_logic < 500:
@@ -4084,21 +4126,13 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 fraction = 50
             else:
                 fraction = 100
-            sl = calculate_safe_stop_loss(
-                price=close_logic,
-                atr=atr,
-                multiplier=sl_mult,
-                fraction=fraction,
-                min_distance_pct=2.0,
-                engine_type='gorengan'
-            )
-            tp = calculate_safe_take_profit(
-                price=close_logic,
-                atr=atr,
-                multiplier=tp_mult,
-                fraction=fraction,
-                engine_type='gorengan'
-            )
+
+            sl_price = close_logic * 0.985  # 1.5% loss
+            tp_price = close_logic * 1.03   # 3% profit
+
+            sl = math.floor(sl_price / fraction) * fraction
+            tp = math.ceil(tp_price / fraction) * fraction
+
             is_valid_rr, risk, reward, rr = validate_risk_reward(
                 price=close_logic,
                 sl=sl,
@@ -4107,6 +4141,8 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             )
             if not is_valid_rr:
                 return None
+
+            # Hitung skor
             score = 5
             if latest_logic['Turnover_Ratio'] > 3:
                 score += 2
@@ -4114,12 +4150,16 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 score += 1
             if latest_logic['Body_Ratio'] > 0.7:
                 score += 1
+            if latest_logic['Day_Change'] > 8:
+                score += 1
+
             prob_up = 0.5 + (score * 0.02)
             prob_up = min(prob_up, 0.7)
             expected_value = (prob_up * reward) - ((1 - prob_up) * risk)
             ev_pct = (expected_value / close_logic) * 100
             if ev_pct < self.min_ev_pct:
                 return None
+
             backtest_metrics = self.get_backtest_metrics(symbol)
             signal_data = {
                 'turnover_ratio': latest_logic['Turnover_Ratio'],
@@ -4130,9 +4170,8 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'historical_win_rate': backtest_metrics.get('win_rate', 35) if backtest_metrics.get('has_data', False) else 35
             }
             confidence_score = self.calculate_confidence_score(signal_data)
-            confidence_score = min(100, confidence_score * adaptive_params['confidence_multiplier'])
+            confidence_score = min(100, confidence_score)
 
-            # News multiplier akan diisi di phase 1 setelah semua sinyal terkumpul
             news_multiplier = 1.0
             news_label = 'netral'
 
@@ -4147,20 +4186,28 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 confidence_label = "⚠️ LOW"
             else:
                 confidence_label = "❌ VERY LOW"
+
+            atr = self.risk_manager.calculate_atr_in_rupiah(df)
             atr_pct = (atr / close_logic) * 100
             holding_analysis = self.analyze_holding_period(symbol, df, atr_pct)
+
             lot, cost, risk_amount = self.risk_manager.calculate_lot(close_logic, atr, symbol, use_kelly=True)
             if lot is None:
                 return None
             can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
             if not can_add:
                 return None
+
             sector = get_sector(symbol)
             risk_pct = (risk_amount / self.risk_manager.modal) * 100
+
             return {
                 'Symbol': symbol,
                 'Sector': sector,
                 'Price': int(close_real),
+                'Day_Change': round(latest_logic['Day_Change'], 1),
+                'Volume_Spike': f"{latest_logic['Turnover_Ratio']:.1f}x",
+                'Turnover': f"Rp {latest_logic['Turnover']/1e6:.0f}Jt",
                 'Stop_Loss': int(sl),
                 'Take_Profit': int(tp),
                 'R/R': round(rr, 2),
@@ -4168,8 +4215,6 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'EV_Pct': round(ev_pct, 2),
                 'Score': score,
                 'ATR': int(atr),
-                'Volume_Spike': f"{latest_logic['Turnover_Ratio']:.1f}x",
-                'Turnover': f"Rp {latest_logic['Turnover']/1e6:.0f}Jt",
                 'Lot': lot,
                 'Cost': int(cost),
                 'Risk_Amount': int(risk_amount),
@@ -4179,9 +4224,6 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'Confidence_Label': confidence_label,
                 'Confidence_Factors': self.confidence_factors,
                 'ATR_Pct': round(atr_pct, 1),
-                'Volatility_Level': adaptive_params['volatility_level'],
-                'Volume_Level': adaptive_params['volume_level'],
-                'Regime_Multiplier': adaptive_params['regime_multiplier'],
                 'News_Label': news_label,
                 'News_Multiplier': news_multiplier,
                 'Target_Pct': holding_analysis['target_pct'],
@@ -4193,9 +4235,10 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'Prob_Day3': holding_analysis['prob_by_period'].get(3, 0),
                 'Holding_Recommendation': holding_analysis['recommendation'],
                 'Exit_Strategy': holding_analysis['exit_strategy'],
-                'Reasons': (f"Vol {turnover_ratio:.1f}x ({adaptive_params['volume_level']}), "
-                           f"ATR {atr_pct:.1f}% ({adaptive_params['volatility_level']})"),
-                'Chart': "BULLISH"
+                'Reasons': (f"Naik {latest_logic['Day_Change']:.1f}%, Vol {latest_logic['Turnover_Ratio']:.1f}x, "
+                           f"Harga {close_logic}, Turnover {latest_logic['Turnover']/1e6:.0f}Jt"),
+                'Chart': "BULLISH",
+                'Note': 'WATCHLIST UNTUK BESOK PAGI (konfirmasi pre-opening)'
             }
         except Exception as e:
             logger.error(f"Error in IntradayGorenganEngine.get_signal for {symbol}: {str(e)}")
@@ -4229,9 +4272,12 @@ class GorenganConfig:
         self.INTERVAL = "1h"
         self.PERIOD = "1mo"
         self.ATR_PERIOD = 14
-        self.MIN_VOLUME_SPIKE = 2.0
-        self.MIN_RR = 1.0
-        self.MIN_EV_PCT = 1.5
+        # Parameter yang bisa dilonggarkan
+        self.MIN_DAY_CHANGE = 1.8          # minimal kenaikan harian (%)
+        self.MIN_VOLUME_SPIKE = 2.0        # minimal rasio turnover
+        self.MIN_PRICE_TO_MA5 = 1.02       # minimal rasio harga terhadap MA5
+        self.MIN_RR = 1.5                  # risk/reward minimal
+        self.MIN_EV_PCT = 1.0               # minimal expected value
 
 class InvestasiConfig:
     def __init__(self, modal: float):
