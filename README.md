@@ -16,12 +16,15 @@
 #   ✅ Indikator teknikal tambahan di Swing Engine (MACD, BB, Stochastic, support, gap, divergensi)
 #   ✅ Filter timeframe lebih tinggi (weekly trend)
 #   ✅ Pengaruh indeks global tambahan: Nikkei 225, Shanghai Composite
+#   ✅ Peningkatan Swing Engine: target 9%, max hold 30 hari, filter ADX >=20, weekly trend diperkuat
+#   ✅ Peningkatan Investasi Engine: target 20% per tahun, max hold 365 hari, filter ROE>=12% & PBV<=2, target ATR15
 # =============================================================================
 
 # =============================================================================
 # 1. INSTALL DEPENDENCIES & IMPORTS
 # =============================================================================
 
+!pip install -q ta
 from google.colab import auth
 from google.auth import default
 import gspread
@@ -54,6 +57,7 @@ import math
 import requests
 from textblob import TextBlob
 from dotenv import load_dotenv
+import ta  # Technical Analysis Library
 
 # Matikan logging yang tidak perlu
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
@@ -1685,7 +1689,7 @@ class PortfolioRiskCalculator:
                 stressed_corr = min(corr * 1.3, 0.99)
             check_corr = stressed_corr if use_stressed else corr
             if check_corr > max_correlation:
-                return False, f"Korelasi {corr:.2f} (stress: {check_corr:.2f}) dengan {symbol} > {max_correlation}"
+                return False, f"Korelasi {corr:.2f} (stress: {stressed_corr:.2f}) dengan {symbol} > {max_correlation}"
         return True, "OK"
 
     def calculate_portfolio_var(
@@ -2190,7 +2194,7 @@ class DividendAnalyzer:
         }
 
 # =============================================================================
-# 16. HOLDING PERIOD ANALYZER (BARU - DENGAN PARAMETER ADAPTIVE)
+# 16. HOLDING PERIOD ANALYZER (BARU - DENGAN PARAMETER ADAPTIVE) - DIPERBARUI UNTUK TARGET LEBIH TINGGI
 # =============================================================================
 
 class HoldingPeriodAnalyzer:
@@ -2200,10 +2204,10 @@ class HoldingPeriodAnalyzer:
         self.atr_pct = atr_pct
         self.base_config = {
             'swing': {
-                'base_target': 7.5,
-                'base_max_hold': 20,
+                'base_target': 9.0,          # dinaikkan dari 7.5
+                'base_max_hold': 30,          # dinaikkan dari 20
                 'lookback_days': 252,
-                'check_periods': [5, 10, 15, 20, 30],
+                'check_periods': [5, 10, 15, 20, 25, 30],
                 'vol_adjust': True
             },
             'gorengan': {
@@ -2214,10 +2218,10 @@ class HoldingPeriodAnalyzer:
                 'vol_adjust': False
             },
             'investasi': {
-                'base_target': 10.0,
-                'base_max_hold': 60,
+                'base_target': 20.0,          # dinaikkan dari 10
+                'base_max_hold': 365,         # dinaikkan dari 60
                 'lookback_days': 504,
-                'check_periods': [10, 20, 30, 45, 60],
+                'check_periods': [60, 120, 180, 252, 365],
                 'vol_adjust': True
             }
         }
@@ -2982,6 +2986,7 @@ class InvestasiEngine(BaseStrategyEngine):
         target_atr5 = current_price + (atr * 5)
         target_atr8 = current_price + (atr * 8)
         target_atr10 = current_price + (atr * 10)
+        target_atr15 = current_price + (atr * 15)   # target lebih agresif
         ath = close.max()
         max_reasonable_target = max(current_ma200 * 2, current_price + (atr * 20))
         all_targets = [
@@ -2991,6 +2996,7 @@ class InvestasiEngine(BaseStrategyEngine):
             ('atr5', target_atr5),
             ('atr8', target_atr8),
             ('atr10', target_atr10),
+            ('atr15', target_atr15),
             ('fib1272', fib_1272),
             ('fib1618', fib_1618),
             ('ath', min(ath, max_reasonable_target))
@@ -3000,27 +3006,30 @@ class InvestasiEngine(BaseStrategyEngine):
             target_atr15 = current_price + (atr * 15)
             valid_targets = [('atr15', target_atr15)]
         valid_targets.sort(key=lambda x: x[1])
-        target_konservatif = valid_targets[0][1]
-        target_moderat = valid_targets[len(valid_targets)//2][1] if len(valid_targets) > 1 else valid_targets[0][1]
-        target_agresif = valid_targets[-1][1]
-        if current_price < 100:
-            fraction = 5
-        elif current_price < 500:
-            fraction = 10
-        elif current_price < 1000:
-            fraction = 25
-        elif current_price < 5000:
-            fraction = 50
+
+        # Ambil nilai unik, lalu bulatkan ke integer terdekat
+        unique_prices = sorted(set([price for _, price in valid_targets]))
+        rounded_prices = [round(price) for price in unique_prices]
+        unique_rounded = sorted(set(rounded_prices))
+
+        if len(unique_rounded) >= 3:
+            target_konservatif = int(unique_rounded[0])
+            target_moderat = int(unique_rounded[1])
+            target_agresif = int(unique_rounded[-1])
+        elif len(unique_rounded) == 2:
+            target_konservatif = int(unique_rounded[0])
+            target_moderat = int(unique_rounded[1])
+            target_agresif = int(unique_rounded[1])
         else:
-            fraction = 100
-        target_konservatif = round(target_konservatif / fraction) * fraction
-        target_moderat = round(target_moderat / fraction) * fraction
-        target_agresif = round(target_agresif / fraction) * fraction
-        ath_rounded = round(min(ath, max_reasonable_target) / fraction) * fraction
+            target_konservatif = target_moderat = target_agresif = int(unique_rounded[0])
+
+        # ATH tetap dibulatkan ke integer
+        ath_rounded = round(min(ath, max_reasonable_target))
+
         return {
-            'target_konservatif': int(target_konservatif),
-            'target_moderat': int(target_moderat),
-            'target_agresif': int(target_agresif),
+            'target_konservatif': target_konservatif,
+            'target_moderat': target_moderat,
+            'target_agresif': target_agresif,
             'target_ath': int(ath_rounded)
         }
 
@@ -3234,6 +3243,15 @@ class InvestasiEngine(BaseStrategyEngine):
                     pbv = fundamental.get('pbv')
                     roe = fundamental.get('roe')
 
+                    # Filter fundamental: ROE >= 12% dan PBV <= 2
+                    if roe is not None and roe > 0:
+                        roe_pct = roe * 100
+                        if roe_pct < 12:
+                            return None  # tidak lolos filter
+                    if pbv is not None and pbv > 0:
+                        if pbv > 2:
+                            return None  # tidak lolos filter
+
                     if per is not None and per > 0:
                         if per < 15:
                             fund_score += 15
@@ -3269,25 +3287,15 @@ class InvestasiEngine(BaseStrategyEngine):
             can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
             if not can_add:
                 return None
-            if current_price_logic < 100:
-                fraction = 5
-            elif current_price_logic < 500:
-                fraction = 10
-            elif current_price_logic < 1000:
-                fraction = 25
-            elif current_price_logic < 5000:
-                fraction = 50
-            else:
-                fraction = 100
 
             # ===== STOP LOSS DIPERLONGAR UNTUK INVESTASI =====
             # Gunakan 15% di bawah entry atau 5% di bawah MA200, mana yang lebih tinggi (agar tidak terlalu ketat)
             sl_by_percent = current_price_logic * 0.85
             sl_by_ma200 = current_ma200 * 0.95
             sl_raw = max(sl_by_percent, sl_by_ma200)
-            sl = math.floor(sl_raw / fraction) * fraction
+            sl = round(sl_raw)  # <-- PERUBAHAN: bulatkan ke integer
             if sl >= current_price_logic:
-                sl = math.floor((current_price_logic * 0.85) / fraction) * fraction
+                sl = round(current_price_logic * 0.85)
 
             sector = get_sector(symbol)
             risk_pct = (risk_amount / self.risk_manager.modal) * 100
@@ -3369,7 +3377,7 @@ class InvestasiEngine(BaseStrategyEngine):
             return None
 
 # =============================================================================
-# 22. SWING ENGINE (DENGAN PARAMETER ADAPTIVE TERBAIK) - FIXED + TURNOVER FILTER + PENINGKATAN
+# 22. SWING ENGINE (DENGAN PARAMETER ADAPTIVE TERBAIK) - VERSI FRAKSI
 # =============================================================================
 
 class SwingEngine(BaseStrategyEngine):
@@ -3456,8 +3464,9 @@ class SwingEngine(BaseStrategyEngine):
             out['Volume_Up'] = (close > close.shift(1)) & (volume > volume.rolling(20).mean())
             out['Volume_Down'] = (close < close.shift(1)) & (volume > volume.rolling(20).mean())
 
-            # RSI Divergence sederhana (harga lower low, RSI higher low -> bullish divergence)
-            # Kita akan hitung nanti di get_signal karena butuh perbandingan beberapa titik
+            # ADX (Average Directional Index)
+            adx_indicator = ta.trend.ADXIndicator(high=high, low=low, close=close, window=14)
+            out['ADX'] = adx_indicator.adx()
 
             out = out.replace([np.inf, -np.inf], np.nan)
             return out.shift(1)
@@ -3472,7 +3481,7 @@ class SwingEngine(BaseStrategyEngine):
         atr_pct = (atr / current_price) * 100 if current_price > 0 else 0
         params = self.adaptive_params.calculate_adaptive_parameters(
             atr_pct=atr_pct,
-            volume_ratio=turnover_ratio,  # kita gunakan turnover ratio sebagai proxy volume
+            volume_ratio=turnover_ratio,
             rsi=rsi,
             price=current_price,
             ma50=ma50,
@@ -3609,6 +3618,11 @@ class SwingEngine(BaseStrategyEngine):
             gap_up = latest_logic['Gap_Up'] if not pd.isna(latest_logic['Gap_Up']) else False
             volume_up = latest_logic['Volume_Up'] if not pd.isna(latest_logic['Volume_Up']) else False
             volume_down = latest_logic['Volume_Down'] if not pd.isna(latest_logic['Volume_Down']) else False
+            adx = float(latest_logic['ADX']) if not pd.isna(latest_logic['ADX']) else 0
+
+            # ===== FILTER ADX =====
+            if adx < 20:
+                return None
 
             # ===== HITUNG SKOR DENGAN WEIGHTING =====
             score = 0
@@ -3655,31 +3669,25 @@ class SwingEngine(BaseStrategyEngine):
             if volume_up:
                 score += 1
             if volume_down:
-                score -= 1  # jika harga turun dengan volume tinggi, kurangi skor
+                score -= 1
 
             # Gap up
             if gap_up:
                 score += 1
 
-            # ===== DETEKSI DIVERGENSI RSI (SEDERHANA) =====
-            # Ambil data 20 hari terakhir
+            # ===== DETEKSI DIVERGENSI RSI =====
             last_20 = df_feat.tail(20)
             if len(last_20) >= 10:
-                # Cari harga terendah dan RSI terendah dalam 20 hari
                 min_price_idx = last_20['Close'].idxmin()
                 min_price_val = last_20.loc[min_price_idx, 'Close']
                 rsi_at_min = last_20.loc[min_price_idx, 'RSI']
-
-                # Harga saat ini
                 current_price = last_20['Close'].iloc[-1]
                 current_rsi = last_20['RSI'].iloc[-1]
-
-                # Jika harga terendah terjadi lebih dari 5 hari lalu dan sekarang harga lebih rendah tapi RSI lebih tinggi
                 if not pd.isna(min_price_val) and not pd.isna(rsi_at_min):
                     if current_price < min_price_val and current_rsi > rsi_at_min:
-                        score += 2  # bullish divergence
+                        score += 2
 
-            # ===== FILTER TIMEFRAME LEBIH TINGGI (WEEKLY) =====
+            # ===== FILTER TIMEFRAME LEBIH TINGGI =====
             weekly_df = df.resample('W').last()
             if len(weekly_df) >= 50:
                 weekly_ma50 = weekly_df['Close'].rolling(50).mean().iloc[-1]
@@ -3689,10 +3697,8 @@ class SwingEngine(BaseStrategyEngine):
                 else:
                     score -= 1
 
-            # ===== PENGARUH INDEKS GLOBAL TAMBAHAN =====
+            # ===== PENGARUH INDEKS GLOBAL =====
             sector = get_sector(symbol)
-
-            # Sektor yang sensitif terhadap komoditas/indeks tertentu
             sector_to_index = {
                 'ENERGY': 'OIL',
                 'MINING': 'GOLD',
@@ -3701,7 +3707,6 @@ class SwingEngine(BaseStrategyEngine):
                 'TRADE': 'USDIDR',
                 'AGRICULTURE': 'OIL',
             }
-
             if sector in sector_to_index:
                 idx_name = sector_to_index[sector]
                 idx_mom = self.global_fetcher.get_momentum(idx_name)
@@ -3710,7 +3715,6 @@ class SwingEngine(BaseStrategyEngine):
                 elif idx_mom < -2:
                     score -= 1
 
-            # Semua saham dipengaruhi sentimen global (Dow Jones, Nikkei, Shanghai)
             dow_mom = self.global_fetcher.get_momentum('DOWJONES')
             if dow_mom > 2:
                 score += 1
@@ -3729,13 +3733,15 @@ class SwingEngine(BaseStrategyEngine):
             elif shanghai_mom < -2:
                 score -= 1
 
-            # ===== LANJUTKAN PERHITUNGAN DASAR =====
+            # ===== HITUNG SL, TP DENGAN FRAKSI =====
             atr = self.risk_manager.calculate_atr_in_rupiah(df)
             adaptive_params = self.get_adaptive_parameters(df, close_logic, rsi, turnover_ratio, ma50, ma200)
             sl_multiplier = adaptive_params['sl_multiplier']
             tp_multiplier = adaptive_params['tp_multiplier']
             min_rr = adaptive_params['min_rr']
             min_ev_pct = adaptive_params.get('min_ev_pct', self.min_ev_pct)
+
+            # Tentukan fraksi berdasarkan harga
             if close_logic < 100:
                 fraction = 5
             elif close_logic < 500:
@@ -3746,6 +3752,8 @@ class SwingEngine(BaseStrategyEngine):
                 fraction = 50
             else:
                 fraction = 100
+
+            # Gunakan fungsi pembulatan fraksi
             sl = calculate_safe_stop_loss(
                 price=close_logic,
                 atr=atr,
@@ -3761,6 +3769,7 @@ class SwingEngine(BaseStrategyEngine):
                 fraction=fraction,
                 engine_type='swing'
             )
+
             is_valid_rr, risk, reward, rr = validate_risk_reward(
                 price=close_logic,
                 sl=sl,
@@ -3770,9 +3779,8 @@ class SwingEngine(BaseStrategyEngine):
             if not is_valid_rr:
                 return None
 
-            # Probabilitas naik berdasarkan skor (skor maks sekitar 20-25)
             prob_up = 0.5 + (score * 0.015)
-            prob_up = min(prob_up, 0.75)  # maks 75%
+            prob_up = min(prob_up, 0.75)
             expected_value = (prob_up * reward) - ((1 - prob_up) * risk)
             ev_pct = (expected_value / close_logic) * 100
             if ev_pct < min_ev_pct:
@@ -3790,7 +3798,6 @@ class SwingEngine(BaseStrategyEngine):
             confidence_score = self.calculate_confidence_score(signal_data)
             confidence_score = min(100, confidence_score * adaptive_params['confidence_multiplier'])
 
-            # News multiplier akan diisi di phase 1 setelah semua sinyal terkumpul
             news_multiplier = 1.0
             news_label = 'netral'
 
@@ -3854,6 +3861,8 @@ class SwingEngine(BaseStrategyEngine):
                 'Prob_Day10': holding_analysis['prob_by_period'].get(10, 0),
                 'Prob_Day15': holding_analysis['prob_by_period'].get(15, 0),
                 'Prob_Day20': holding_analysis['prob_by_period'].get(20, 0),
+                'Prob_Day25': holding_analysis['prob_by_period'].get(25, 0),
+                'Prob_Day30': holding_analysis['prob_by_period'].get(30, 0),
                 'Holding_Recommendation': holding_analysis['recommendation'],
                 'Exit_Strategy': holding_analysis['exit_strategy'],
                 'Reasons': (f"RSI {rsi:.0f} ({adaptive_params['rsi_bias']}), "
@@ -3866,13 +3875,13 @@ class SwingEngine(BaseStrategyEngine):
             return None
 
 # =============================================================================
-# 23. INTRADAY GORENGAN ENGINE (VERSI BPJS DENGAN PARAMETER FLEKSIBEL)
+# 23. INTRADAY GORENGAN ENGINE (VERSI BPJS) - DENGAN FRAKSI
 # =============================================================================
 
 class IntradayGorenganEngine(BaseStrategyEngine):
     def __init__(self, config, global_fetcher, news_analyzer=None):
         super().__init__(config, global_fetcher, engine_type='gorengan')
-        self.config = config  # simpan config untuk akses parameter
+        self.config = config
         self.atr_period = getattr(config, 'ATR_PERIOD', 14)
         self.min_volume_spike = config.MIN_VOLUME_SPIKE
         self.base_min_rr = config.MIN_RR
@@ -3925,9 +3934,6 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             return pd.DataFrame()
 
     def is_bpjs_candidate(self, row: pd.Series, modal: float) -> Tuple[bool, str]:
-        """
-        Memeriksa apakah saham memenuhi kriteria BPJS dengan parameter dari config.
-        """
         day_change = row.get('Day_Change')
         if pd.isna(day_change):
             return False, "Day change tidak tersedia"
@@ -4095,7 +4101,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             if close_logic < min_price or close_logic > max_price:
                 return None
 
-            # Filter turnover dasar (dari modal adapter)
+            # Filter turnover dasar
             min_turn, min_avg_turn = self.modal_adapter.get_filter_turnover()
             last_turnover = float(latest_logic['Turnover']) if not pd.isna(latest_logic['Turnover']) else 0
             avg_turnover_20 = latest_logic['Turnover_MA'] if not pd.isna(latest_logic['Turnover_MA']) else 0
@@ -4108,14 +4114,12 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             if spread > max_spread:
                 return None
 
-            # ===== FILTER BPJS (ADAPTIF MODAL) =====
+            # ===== FILTER BPJS =====
             is_candidate, reason = self.is_bpjs_candidate(latest_logic, self.risk_manager.modal)
             if not is_candidate:
-                # Bisa di-uncomment untuk debugging
-                # print(f"   {symbol} gagal BPJS: {reason}")
                 return None
 
-            # ===== HITUNG STOP LOSS DAN TAKE PROFIT =====
+            # ===== HITUNG STOP LOSS DAN TAKE PROFIT DENGAN FRAKSI =====
             if close_logic < 100:
                 fraction = 5
             elif close_logic < 500:
@@ -4405,7 +4409,7 @@ class GoogleSheetsExporter:
                     signal['Symbol'],
                     signal['Price'],
                     signal['Stop_Loss'],
-                    signal.get('Take_Profit', signal.get('Target_ATH', '-')),
+                    signal.get('Take_Profit', signal.get('Target_Agresif', '-')),
                     signal.get('R/R', '-'),
                     notes,
                     ''  # kolom P&L manual kosong
@@ -4456,7 +4460,9 @@ def print_investasi_portfolio_guide(signals, modal, risk_manager,
                 div_yield = 0
         fee_config = RealisticFeeConfig(liquidity='medium')
         total_fee, net_profit, net_return = fee_config.calculate_round_trip(
-            signal['Price'], signal['Target_ATH'], signal['Lot']  # dulu Target_Moderat
+            signal['Price'], 
+            signal['Target_Agresif'],   # dulu 'Target_ATH'
+            signal['Lot']
         )
         fee_impact_pct = (total_fee / cost) * 100 if cost > 0 else 0
         total_fee_impact += total_fee
@@ -4464,7 +4470,7 @@ def print_investasi_portfolio_guide(signals, modal, risk_manager,
         conf_bar = '█' * int(confidence/10) + '░' * (10 - int(confidence/10))
         print(f"\n{i}. {signal['Symbol']} - {signal.get('Dividend_Display', 'GROWTH')}")
         print(f"   Harga: Rp {signal['Price']:,} | Lot: {signal['Lot']} | Biaya: Rp {cost:,}")
-        print(f"   Target ATH: {signal.get('Target_ATH', 'HOLD')} | Stop: Rp {signal['Stop_Loss']:,}")
+        print(f"   Target Agresif: {signal.get('Target_Agresif', 'HOLD')} | Stop: Rp {signal['Stop_Loss']:,}")
         print(f"   Hold: {signal['Optimal_Hold_Days']} hari | Sukses: {signal['Success_Rate']}%")
         print(f"   Confidence: {confidence}% [{conf_bar}] {signal['Confidence_Label']}")
         print(f"   Volatilitas: {signal.get('ATR_Pct', 0)}% ({signal.get('Volatility_Level', 'N/A')})")
@@ -4773,7 +4779,14 @@ class ValidationSuite:
         self.engine_class = engine_class
         self.base_config = base_config
         self.data_dict = data_dict
-        self.engine_type = engine_class.__name__.replace('Engine', '').lower()
+        # Normalisasi engine_type dari nama kelas
+        raw_name = engine_class.__name__.replace('Engine', '').lower()
+        # Mapping untuk gorengan
+        if raw_name == 'intradaygorengan':
+            self.engine_type = 'gorengan'
+        else:
+            self.engine_type = raw_name
+
         self.engine_params = {
             'swing': {
                 'name': 'SWING',
@@ -4783,7 +4796,7 @@ class ValidationSuite:
                 'win_rate_threshold': 40,
                 'dd_threshold': 50
             },
-            'intradaygorengan': {
+            'gorengan': {
                 'name': 'GORENGAN',
                 'block_size_range': (5, 10),
                 'min_history': 50,
@@ -4843,6 +4856,7 @@ class ValidationSuite:
             results['monte_carlo'] = {'error': 'Insufficient data'}
         else:
             returns_series = pd.Series(all_returns)
+            # Gunakan self.engine_type yang sudah dinormalisasi
             mc = BlockBootstrapMonteCarlo(returns_series=returns_series, engine_type=self.engine_type)
             mc_results = mc.run_simulation(
                 initial_capital=self.base_config.MODAL,
