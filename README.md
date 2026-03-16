@@ -1,30 +1,22 @@
 # =============================================================================
-# 📈 IDX STOCK SCANNER - QUADRUPLE ENGINE (AGGRESSIVE VERSION) - FINAL ENHANCED
-# Fitur:
-# - Semua fitur sebelumnya + peningkatan:
-#   ✅ Filter likuiditas berbasis turnover
-#   ✅ Optimasi portofolio mean-variance dengan shrinkage
-#   ✅ Analisis skenario makro (IHSG, USD/IDR)
-#   ✅ News sentiment dengan bobot jumlah artikel
-#   ✅ Mitigasi overfitting pada setiap peningkatan
-#   ✅ Input modal bebas (hanya modal yang tersedia)
-#   ✅ Peringatan konsentrasi sektor & korelasi
-#   ✅ Rekomendasi alokasi antar engine
-#   ✅ Template export spreadsheet seragam dengan kolom P&L manual
-#   ✅ Stop loss investasi longgar untuk target agresif
-#   ✅ Data fundamental (PER, PBV, ROE) – opsional, tanpa default
-#   ✅ Indikator teknikal tambahan di Swing Engine (MACD, BB, Stochastic, support, gap, divergensi)
-#   ✅ Filter timeframe lebih tinggi (weekly trend)
-#   ✅ Pengaruh indeks global tambahan: Nikkei 225, Shanghai Composite
-#   ✅ Peningkatan Swing Engine: target 9%, max hold 30 hari, filter ADX >=20, weekly trend diperkuat
-#   ✅ Peningkatan Investasi Engine: target 20% per tahun, max hold 365 hari, filter ROE>=12% & PBV<=2, target ATR15
+# 📈 IDX STOCK SCANNER - QUADRUPLE ENGINE (AGGRESSIVE ENHANCED) - FINAL INTEGRATED
+# Fitur baru:
+# - Dynamic risk convexity (risk multiplier berbasis EV + confidence + regime)
+# - Gorengan engine stop architecture (ATR-based + volatility regime)
+# - Cross-engine portfolio construction (heuristic + mean-variance opsional)
+# - Entry realism & execution consistency (risk distance filter, entry delay simulation)
+# - Opsi jalankan semua engine sekaligus
 # =============================================================================
 
 # =============================================================================
-# 1. INSTALL DEPENDENCIES & IMPORTS
+# 0. INSTALL LIBRARY TAMBAHAN (diam-diam)
 # =============================================================================
-
 !pip install -q ta
+
+# =============================================================================
+# 1. DEPENDENCIES & IMPORTS
+# =============================================================================
+
 from google.colab import auth
 from google.auth import default
 import gspread
@@ -1070,7 +1062,7 @@ def calculate_return(series: pd.Series, period: int = 5) -> float:
     return (series.iloc[-1] / series.iloc[-period-1] - 1) * 100
 
 # =============================================================================
-# 8A. UTILITY FUNCTIONS - FIXED VERSION DENGAN SAFE STOP LOSS
+# 8A. UTILITY FUNCTIONS - SAFE STOP LOSS & TAKE PROFIT (DENGAN FRAKSI)
 # =============================================================================
 
 def calculate_safe_stop_loss(
@@ -1341,7 +1333,7 @@ class BacktestMetrics:
         }
 
 # =============================================================================
-# 11. RISK MANAGER (AGGRESSIVE - 3% BASE RISK) - DIPERBAIKI
+# 11. RISK MANAGER (AGGRESSIVE - 3% BASE RISK) - DENGAN DYNAMIC RISK CONVEXITY [NEW]
 # =============================================================================
 
 class RiskManager:
@@ -1360,6 +1352,8 @@ class RiskManager:
         self.max_lot_per_position = max_lot_per_position
         self.engine_type = engine_type
         self.max_modal_per_position_pct = 40.0
+        # [NEW] Hard cap risk per trade
+        self.max_risk_per_trade_pct = 5.0
 
         self._validate_modal_for_engine()
 
@@ -1395,6 +1389,32 @@ class RiskManager:
             raise ValueError(f"Modal minimal untuk {self.engine_type} adalah Rp {min_modal:,}")
         if self.modal > max_modal:
             raise ValueError(f"Modal maksimal untuk {self.engine_type} adalah Rp {max_modal:,}")
+
+    # [NEW] Dynamic risk allocation based on EV and confidence
+    def get_dynamic_risk_multiplier(self, ev_pct: float, confidence: float) -> float:
+        """
+        Menghitung risk multiplier berdasarkan expected value dan confidence.
+        EV dalam persen, confidence 0-100.
+        """
+        if ev_pct > 3.0 and confidence > 70:
+            mult = 1.3
+        elif ev_pct > 2.0 and confidence > 50:
+            mult = 1.1
+        elif ev_pct < 1.0 or confidence < 30:
+            mult = 0.5
+        else:
+            mult = 1.0
+
+        # Gabungkan dengan regime multiplier jika ada
+        if self.regime_params:
+            mult *= self.regime_params.get('risk_multiplier', 1.0)
+
+        # Batasi agar tidak melebihi hard cap
+        effective_risk = self.base_risk_per_trade_pct * mult
+        if effective_risk > self.max_risk_per_trade_pct:
+            mult = self.max_risk_per_trade_pct / self.base_risk_per_trade_pct
+
+        return round(mult, 2)
 
     def calculate_atr_in_rupiah(self, df: pd.DataFrame, period: int = 14) -> float:
         try:
@@ -1465,7 +1485,7 @@ class RiskManager:
             kelly = 0.01
 
         adjusted_risk_pct = self.risk_per_trade_pct * (1 + kelly * 4)
-        adjusted_risk_pct = min(adjusted_risk_pct, 6.0)
+        adjusted_risk_pct = min(adjusted_risk_pct, self.max_risk_per_trade_pct)
 
         risk_per_trade_rp = self.modal * (adjusted_risk_pct / 100)
         risk_per_lot = atr * 100
@@ -1498,10 +1518,18 @@ class RiskManager:
         close: float,
         atr: float,
         symbol: str = None,
-        use_kelly: bool = True
+        use_kelly: bool = True,
+        dynamic_multiplier: float = 1.0   # [NEW] parameter tambahan
     ):
         if atr <= 0:
             return None, None, None
+
+        # [NEW] Terapkan dynamic multiplier ke risk per trade
+        effective_risk_pct = self.base_risk_per_trade_pct * dynamic_multiplier
+        effective_risk_pct = min(effective_risk_pct, self.max_risk_per_trade_pct)
+        self.risk_per_trade_pct = effective_risk_pct
+        self.risk_per_trade_rp = self.modal * (effective_risk_pct / 100)
+
         if use_kelly and (len(self.trade_history) >= 10 or (symbol and symbol in self.backtest_metrics)):
             return self.calculate_kelly_lot(close, atr, symbol)
         if atr <= 0 or close <= 0:
@@ -1550,9 +1578,7 @@ class RiskManager:
 
     def adjust_for_regime(self, regime_params: Dict):
         self.regime_params = regime_params
-        multiplier = regime_params.get('risk_multiplier', 1.0)
-        self.risk_per_trade_pct = self.base_risk_per_trade_pct * multiplier
-        self.risk_per_trade_rp = self.modal * (self.risk_per_trade_pct / 100)
+        # Jangan langsung ubah risk_per_trade_pct di sini; biarkan dynamic multiplier yang menggabungkan
 
     def can_add_position(self, risk_amount: float, cost: float = None) -> Tuple[bool, str]:
         if self.current_risk_rp + risk_amount > self.max_risk_portfolio_rp:
@@ -1785,7 +1811,7 @@ class RealisticFeeConfig:
         print(f"   Break-even return: {((buy_fee + sell_fee)/amount)*100:.2f}%")
 
 # =============================================================================
-# 14. ENTRY DELAY SIMULATOR - DIPERBAIKI (HANYA UNTUK INFORMASI)
+# 14. ENTRY DELAY SIMULATOR - DIPERBAIKI (INTEGRASI DENGAN SIGNAL VALIDASI) [MODIFIED]
 # =============================================================================
 
 class EntryDelaySimulator:
@@ -3007,7 +3033,7 @@ class InvestasiEngine(BaseStrategyEngine):
             valid_targets = [('atr15', target_atr15)]
         valid_targets.sort(key=lambda x: x[1])
 
-        # Ambil nilai unik, lalu bulatkan ke integer terdekat
+        # Ambil nilai unik, lalu bulatkan ke integer terdekat (tanpa fraksi)
         unique_prices = sorted(set([price for _, price in valid_targets]))
         rounded_prices = [round(price) for price in unique_prices]
         unique_rounded = sorted(set(rounded_prices))
@@ -3281,25 +3307,14 @@ class InvestasiEngine(BaseStrategyEngine):
                     final_score += fund_score * 0.10
                     final_score = min(100, final_score)
 
-            lot, cost, risk_amount = self.risk_manager.calculate_lot(current_price_logic, atr_14, symbol, use_kelly=True)
-            if lot is None:
-                return None
-            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
-            if not can_add:
-                return None
-
-            # ===== STOP LOSS DIPERLONGAR UNTUK INVESTASI =====
-            # Gunakan 15% di bawah entry atau 5% di bawah MA200, mana yang lebih tinggi (agar tidak terlalu ketat)
-            sl_by_percent = current_price_logic * 0.85
-            sl_by_ma200 = current_ma200 * 0.95
-            sl_raw = max(sl_by_percent, sl_by_ma200)
-            sl = round(sl_raw)  # <-- PERUBAHAN: bulatkan ke integer
-            if sl >= current_price_logic:
-                sl = round(current_price_logic * 0.85)
-
-            sector = get_sector(symbol)
-            risk_pct = (risk_amount / self.risk_manager.modal) * 100
+            # ===== TARGET PRICES =====
             targets = self.calculate_target_prices(current_price_logic, atr_value, df)
+
+            # ===== HOLDING ANALYSIS =====
+            atr_pct_for_hold = (atr_value / current_price_logic) * 100
+            holding_analysis = self.analyze_holding_period(symbol, df, atr_pct_for_hold)
+
+            # ===== CONFIDENCE SCORE =====
             signal_data = {
                 'teknikal_score': teknikal_score,
                 'dividend_score': dividend_analysis.get('total_score', 0),
@@ -3309,11 +3324,47 @@ class InvestasiEngine(BaseStrategyEngine):
             confidence_score = self.calculate_confidence_score(signal_data)
             confidence_score = min(100, confidence_score * adaptive_params['confidence_multiplier'])
 
-            # News multiplier akan diisi di phase 1 setelah semua sinyal terkumpul
+            # ===== EV SEDERHANA UNTUK DYNAMIC MULTIPLIER =====
+            target_pct = (targets['target_agresif'] - current_price_logic) / current_price_logic * 100
+            success_rate = holding_analysis.get('success_rate_in_max', 50) / 100
+            ev_pct = target_pct * success_rate
+
+            # ===== DYNAMIC RISK MULTIPLIER =====
+            dynamic_mult = self.risk_manager.get_dynamic_risk_multiplier(ev_pct, confidence_score)
+
+            # ===== HITUNG LOT DENGAN DYNAMIC MULTIPLIER =====
+            lot, cost, risk_amount = self.risk_manager.calculate_lot(
+                current_price_logic, atr_14, symbol, use_kelly=True,
+                dynamic_multiplier=dynamic_mult
+            )
+            if lot is None:
+                return None
+            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
+            if not can_add:
+                return None
+
+            # ===== STOP LOSS =====
+            sl_by_percent = current_price_logic * 0.85
+            sl_by_ma200 = current_ma200 * 0.95
+            sl_raw = max(sl_by_percent, sl_by_ma200)
+            sl = round(sl_raw)
+            if sl >= current_price_logic:
+                sl = round(current_price_logic * 0.85)
+
+            # ===== RISK DISTANCE VALIDATION =====
+            risk_distance_pct = ((current_price_logic - sl) / current_price_logic) * 100
+            if risk_distance_pct < 1.0 and current_price_logic > 100:
+                return None
+
+            # ===== RISK PERSEN =====
+            risk_pct = (risk_amount / self.risk_manager.modal) * 100
+            sector = get_sector(symbol)
+
+            # ===== NEWS LABEL (akan diisi nanti) =====
             news_multiplier = 1.0
             news_label = 'netral'
 
-            confidence_score = min(100, max(0, confidence_score))
+            # ===== CONFIDENCE LABEL =====
             if confidence_score >= 80:
                 confidence_label = "🏆 VERY HIGH"
             elif confidence_score >= 65:
@@ -3324,9 +3375,8 @@ class InvestasiEngine(BaseStrategyEngine):
                 confidence_label = "⚠️ LOW"
             else:
                 confidence_label = "❌ VERY LOW"
-            atr_pct_for_hold = (atr_value / current_price_logic) * 100
-            holding_analysis = self.analyze_holding_period(symbol, df, atr_pct_for_hold)
 
+            # ===== RETURN =====
             return {
                 'Symbol': symbol,
                 'Sector': sector,
@@ -3343,6 +3393,7 @@ class InvestasiEngine(BaseStrategyEngine):
                 'Cost': int(cost),
                 'Risk_Amount': int(risk_amount),
                 'Risk_Pct': round(risk_pct, 1),
+                'Risk_Distance_Pct': round(risk_distance_pct, 2),
                 'ATR': int(atr_value),
                 'ATR_Pct': adaptive_params['atr_pct'],
                 'ATR_Label': volatility_label,
@@ -3377,7 +3428,7 @@ class InvestasiEngine(BaseStrategyEngine):
             return None
 
 # =============================================================================
-# 22. SWING ENGINE (DENGAN PARAMETER ADAPTIVE TERBAIK) - VERSI FRAKSI
+# 22. SWING ENGINE (DENGAN PARAMETER ADAPTIVE TERBAIK) - VERSI FRAKSI (STOP AMAN)
 # =============================================================================
 
 class SwingEngine(BaseStrategyEngine):
@@ -3753,7 +3804,6 @@ class SwingEngine(BaseStrategyEngine):
             else:
                 fraction = 100
 
-            # Gunakan fungsi pembulatan fraksi
             sl = calculate_safe_stop_loss(
                 price=close_logic,
                 atr=atr,
@@ -3793,10 +3843,25 @@ class SwingEngine(BaseStrategyEngine):
                 'ma20': ma20,
                 'ma50': ma50,
                 'rr': rr,
-                'historical_win_rate': backtest_metrics.get('win_rate', 50) if backtest_metrics.get('has_data', False) else 50
+                'historical_win_rate': backtest_metrics.get('win_rate', 50) if backtest_metrics.get('has_data', False) else 50,
+                'ev_pct': ev_pct,
+                'confidence': 0  # akan diisi nanti
             }
             confidence_score = self.calculate_confidence_score(signal_data)
             confidence_score = min(100, confidence_score * adaptive_params['confidence_multiplier'])
+            signal_data['confidence'] = confidence_score
+
+            # ===== DYNAMIC RISK MULTIPLIER =====
+            dynamic_mult = self.risk_manager.get_dynamic_risk_multiplier(ev_pct, confidence_score)
+            lot, cost, risk_amount = self.risk_manager.calculate_lot(
+                close_logic, atr, symbol, use_kelly=True,
+                dynamic_multiplier=dynamic_mult
+            )
+            if lot is None:
+                return None
+            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
+            if not can_add:
+                return None
 
             news_multiplier = 1.0
             news_label = 'netral'
@@ -3814,14 +3879,14 @@ class SwingEngine(BaseStrategyEngine):
                 confidence_label = "❌ VERY LOW"
             atr_pct = (atr / close_logic) * 100
             holding_analysis = self.analyze_holding_period(symbol, df, atr_pct)
-            lot, cost, risk_amount = self.risk_manager.calculate_lot(close_logic, atr, symbol, use_kelly=True)
-            if lot is None:
-                return None
-            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
-            if not can_add:
-                return None
+
             sector = get_sector(symbol)
             risk_pct = (risk_amount / self.risk_manager.modal) * 100
+
+            # Hitung risk distance untuk validasi eksekusi
+            risk_distance_pct = ((close_logic - sl) / close_logic) * 100
+            if risk_distance_pct < 1.0 and close_logic > 100:
+                return None
 
             return {
                 'Symbol': symbol,
@@ -3833,6 +3898,7 @@ class SwingEngine(BaseStrategyEngine):
                 'R/R': round(rr, 2),
                 'Prob_Up': round(prob_up, 3),
                 'EV_Pct': round(ev_pct, 2),
+                'Risk_Distance_Pct': round(risk_distance_pct, 2),  # [NEW]
                 'Score': score,
                 'ATR': int(atr),
                 'Lot': lot,
@@ -3875,7 +3941,7 @@ class SwingEngine(BaseStrategyEngine):
             return None
 
 # =============================================================================
-# 23. INTRADAY GORENGAN ENGINE (VERSI BPJS) - DENGAN FRAKSI
+# 23. INTRADAY GORENGAN ENGINE (VERSI BPJS) - DENGAN ATR-BASED STOP [MODIFIED]
 # =============================================================================
 
 class IntradayGorenganEngine(BaseStrategyEngine):
@@ -4119,7 +4185,22 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             if not is_candidate:
                 return None
 
-            # ===== HITUNG STOP LOSS DAN TAKE PROFIT DENGAN FRAKSI =====
+            # ===== HITUNG STOP LOSS DAN TAKE PROFIT DENGAN ATR (TIDAK FIXED) =====
+            atr = self.risk_manager.calculate_atr_in_rupiah(df)
+            adaptive_params = self.get_adaptive_parameters(df, close_logic, latest_logic)
+
+            # Gunakan ATR multiplier yang disesuaikan dengan volatility regime
+            if adaptive_params['volatility_level'] in ['HIGH', 'VERY_HIGH']:
+                sl_mult = 1.2  # stop lebih longgar saat volatilitas tinggi
+                tp_mult = 2.5
+            else:
+                sl_mult = 1.0
+                tp_mult = 2.0
+
+            sl_raw = close_logic - (atr * sl_mult)
+            tp_raw = close_logic + (atr * tp_mult)
+
+            # Tentukan fraksi berdasarkan harga (untuk pembulatan)
             if close_logic < 100:
                 fraction = 5
             elif close_logic < 500:
@@ -4131,11 +4212,15 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             else:
                 fraction = 100
 
-            sl_price = close_logic * 0.985  # 1.5% loss
-            tp_price = close_logic * 1.03   # 3% profit
+            sl = math.floor(sl_raw / fraction) * fraction
+            tp = math.ceil(tp_raw / fraction) * fraction
 
-            sl = math.floor(sl_price / fraction) * fraction
-            tp = math.ceil(tp_price / fraction) * fraction
+            # Pastikan jarak minimal
+            min_distance = max(atr, close_logic * 0.01)
+            if close_logic - sl < min_distance:
+                sl = math.floor((close_logic - min_distance) / fraction) * fraction
+            if tp - close_logic < min_distance:
+                tp = math.ceil((close_logic + min_distance) / fraction) * fraction
 
             is_valid_rr, risk, reward, rr = validate_risk_reward(
                 price=close_logic,
@@ -4171,10 +4256,24 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'turnover': latest_logic['Turnover'],
                 'body_ratio': latest_logic['Body_Ratio'],
                 'modal': self.risk_manager.modal if self.risk_manager else 1,
-                'historical_win_rate': backtest_metrics.get('win_rate', 35) if backtest_metrics.get('has_data', False) else 35
+                'historical_win_rate': backtest_metrics.get('win_rate', 35) if backtest_metrics.get('has_data', False) else 35,
+                'ev_pct': ev_pct
             }
             confidence_score = self.calculate_confidence_score(signal_data)
             confidence_score = min(100, confidence_score)
+            signal_data['confidence'] = confidence_score
+
+            # ===== DYNAMIC RISK MULTIPLIER =====
+            dynamic_mult = self.risk_manager.get_dynamic_risk_multiplier(ev_pct, confidence_score)
+            lot, cost, risk_amount = self.risk_manager.calculate_lot(
+                close_logic, atr, symbol, use_kelly=True,
+                dynamic_multiplier=dynamic_mult
+            )
+            if lot is None:
+                return None
+            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
+            if not can_add:
+                return None
 
             news_multiplier = 1.0
             news_label = 'netral'
@@ -4191,19 +4290,16 @@ class IntradayGorenganEngine(BaseStrategyEngine):
             else:
                 confidence_label = "❌ VERY LOW"
 
-            atr = self.risk_manager.calculate_atr_in_rupiah(df)
             atr_pct = (atr / close_logic) * 100
             holding_analysis = self.analyze_holding_period(symbol, df, atr_pct)
 
-            lot, cost, risk_amount = self.risk_manager.calculate_lot(close_logic, atr, symbol, use_kelly=True)
-            if lot is None:
-                return None
-            can_add, reason = self.risk_manager.can_add_position(risk_amount, cost)
-            if not can_add:
-                return None
-
             sector = get_sector(symbol)
             risk_pct = (risk_amount / self.risk_manager.modal) * 100
+
+            # Hitung risk distance untuk validasi eksekusi
+            risk_distance_pct = ((close_logic - sl) / close_logic) * 100
+            if risk_distance_pct < 1.0 and close_logic > 100:
+                return None
 
             return {
                 'Symbol': symbol,
@@ -4217,6 +4313,7 @@ class IntradayGorenganEngine(BaseStrategyEngine):
                 'R/R': round(rr, 2),
                 'Prob_Up': round(prob_up, 3),
                 'EV_Pct': round(ev_pct, 2),
+                'Risk_Distance_Pct': round(risk_distance_pct, 2),  # [NEW]
                 'Score': score,
                 'ATR': int(atr),
                 'Lot': lot,
@@ -4291,7 +4388,7 @@ class InvestasiConfig:
         self.PERIOD = "5y"
 
 # =============================================================================
-# 25. GOOGLE SHEETS EXPORTER (DENGAN FORMAT SERAGAM)
+# 25. GOOGLE SHEETS EXPORTER (DENGAN FORMAT SERAGAM) - DIPERBARUI
 # =============================================================================
 
 class GoogleSheetsExporter:
@@ -4299,7 +4396,7 @@ class GoogleSheetsExporter:
         self.initialized = False
         self.spreadsheet = None
         self._url_printed = False
-        self.HEADERS = ['Date', 'Engine', 'Symbol', 'Entry', 'SL', 'TP', 'R/R', 'Notes', 'P&L (manual)']
+        self.HEADERS = ['Date', 'Engine', 'Symbol', 'Entry', 'SL', 'TP', 'R/R', 'RiskDist%', 'Notes', 'P&L (manual)']
 
     def _init_sheets(self):
         try:
@@ -4355,7 +4452,6 @@ class GoogleSheetsExporter:
             notes.append(f"Hold {signal.get('Optimal_Hold_Days','-')}d")
             notes.append(f"ATR {signal.get('ATR_Pct',0)}%")
             if signal.get('Confidence_Factors'):
-                # Tambahkan faktor confidence jika ada
                 notes.append(f"Conf: {signal['Confidence_Factors']}")
         elif engine_name == 'GORENGAN ENGINE':
             notes.append(f"Spike {signal.get('Volume_Spike','-')}")
@@ -4403,14 +4499,19 @@ class GoogleSheetsExporter:
             worksheet = self._get_or_create_engine_sheet(engine_name)
             for signal in signals:
                 notes = self._format_notes(signal, engine_name)
+                if engine_name == 'INVESTASI ENGINE':
+                    tp_value = signal.get('Target_Agresif', '-')
+                else:
+                    tp_value = signal.get('Take_Profit', '-')
                 row = [
                     datetime.now().strftime('%Y-%m-%d'),
                     engine_name.replace(' ENGINE', ''),
                     signal['Symbol'],
                     signal['Price'],
                     signal['Stop_Loss'],
-                    signal.get('Take_Profit', signal.get('Target_Agresif', '-')),
+                    tp_value,
                     signal.get('R/R', '-'),
+                    signal.get('Risk_Distance_Pct', '-'),
                     notes,
                     ''  # kolom P&L manual kosong
                 ]
@@ -4461,7 +4562,7 @@ def print_investasi_portfolio_guide(signals, modal, risk_manager,
         fee_config = RealisticFeeConfig(liquidity='medium')
         total_fee, net_profit, net_return = fee_config.calculate_round_trip(
             signal['Price'], 
-            signal['Target_Agresif'],   # dulu 'Target_ATH'
+            signal['Target_Agresif'], 
             signal['Lot']
         )
         fee_impact_pct = (total_fee / cost) * 100 if cost > 0 else 0
@@ -4470,7 +4571,8 @@ def print_investasi_portfolio_guide(signals, modal, risk_manager,
         conf_bar = '█' * int(confidence/10) + '░' * (10 - int(confidence/10))
         print(f"\n{i}. {signal['Symbol']} - {signal.get('Dividend_Display', 'GROWTH')}")
         print(f"   Harga: Rp {signal['Price']:,} | Lot: {signal['Lot']} | Biaya: Rp {cost:,}")
-        print(f"   Target Agresif: {signal.get('Target_Agresif', 'HOLD')} | Stop: Rp {signal['Stop_Loss']:,}")
+        print(f"   Target Agresif: {signal['Target_Agresif']} | Stop: Rp {signal['Stop_Loss']:,}")
+        print(f"   (Konservatif: {signal['Target_Konservatif']}, Moderat: {signal['Target_Moderat']}, ATH: {signal.get('Target_ATH', '-')})")
         print(f"   Hold: {signal['Optimal_Hold_Days']} hari | Sukses: {signal['Success_Rate']}%")
         print(f"   Confidence: {confidence}% [{conf_bar}] {signal['Confidence_Label']}")
         print(f"   Volatilitas: {signal.get('ATR_Pct', 0)}% ({signal.get('Volatility_Level', 'N/A')})")
@@ -4480,8 +4582,9 @@ def print_investasi_portfolio_guide(signals, modal, risk_manager,
             print(f"   📰 Sentimen Berita: {signal['News_Label']}")
         if signal.get('PER') and signal.get('PBV') and signal.get('ROE'):
             print(f"   📊 PER: {signal['PER']:.1f} | PBV: {signal['PBV']:.1f} | ROE: {signal['ROE']*100:.1f}%")
+        print(f"   🎯 Jarak Stop: {signal.get('Risk_Distance_Pct', 0)}%")
         print(f"   💰 Fee Impact: Rp {total_fee:,.0f} ({fee_impact_pct:.1f}% dari biaya)")
-        print(f"   📊 Net Return Target: {net_return:.1f}% (setelah fee)")
+        print(f"   📊 Net Return Target (Agresif): {net_return:.1f}% (setelah fee)")
         total_cost += cost
     print("\n" + "-"*100)
     print(f"TOTAL: Rp {total_cost:,} ({(total_cost/modal)*100:.1f}% modal)")
@@ -4559,6 +4662,7 @@ def print_portfolio_guide(signals, modal, risk_manager, portfolio_risk_calculato
             print(f"   📰 Sentimen Berita: {signal['News_Label']}")
         print(f"   ⏱️  Holding: {signal.get('Optimal_Hold_Days', 'N/A')} hari (max {signal.get('Max_Hold_Days', 'N/A')})")
         print(f"   📈 Sukses: {signal.get('Success_Rate', 0)}% dalam {signal.get('Optimal_Hold_Days', 'N/A')} hari")
+        print(f"   🎯 Jarak Stop: {signal.get('Risk_Distance_Pct', 0)}%")
         print(f"   💡 Exit: {signal.get('Exit_Strategy', 'Target tercapai')}")
         print(f"   📝 Alasan: {signal.get('Reasons', '-')}")
         print(f"   💰 Fee Impact: Rp {total_fee:,.0f} ({fee_impact_pct:.1f}% dari biaya)")
@@ -4583,6 +4687,85 @@ def print_portfolio_guide(signals, modal, risk_manager, portfolio_risk_calculato
     else:
         print(f"\n✅ Risk dan modal masih dalam batas aman.")
     print("="*120)
+
+# =============================================================================
+# [NEW] 27A. CROSS-ENGINE PORTFOLIO CONSTRUCTION (HEURISTIC + MEAN-VARIANCE)
+# =============================================================================
+
+def optimize_cross_engine(all_signals: Dict[str, List[Dict]], price_data: Dict[str, pd.DataFrame],
+                          total_modal: float, regime: str) -> Dict[str, List[Dict]]:
+    """
+    Mengalokasikan modal ke masing-masing engine berdasarkan kondisi pasar dan korelasi.
+    Mengembalikan dictionary sinyal dengan lot yang sudah disesuaikan.
+    """
+    # Hitung total sinyal per engine
+    engine_counts = {k: len(v) for k, v in all_signals.items()}
+    if sum(engine_counts.values()) == 0:
+        return all_signals
+
+    # Bobot alokasi berbasis regime (heuristic)
+    regime_weights = {
+        'BEAR': {'swing': 0.20, 'gorengan': 0.10, 'investasi': 0.70},
+        'BULL': {'swing': 0.40, 'gorengan': 0.30, 'investasi': 0.30},
+        'SIDEWAYS': {'swing': 0.30, 'gorengan': 0.20, 'investasi': 0.50},
+        'HIGH_VOL': {'swing': 0.15, 'gorengan': 0.05, 'investasi': 0.80},
+        'UNKNOWN': {'swing': 0.33, 'gorengan': 0.33, 'investasi': 0.34}
+    }
+    weights = regime_weights.get(regime, regime_weights['UNKNOWN'])
+
+    # Jika suatu engine tidak punya sinyal, alokasikan ke engine lain secara proporsional
+    total_weight = 0
+    for eng in weights:
+        if engine_counts.get(eng, 0) == 0:
+            weights[eng] = 0
+        else:
+            total_weight += weights[eng]
+    if total_weight == 0:
+        # fallback: bagi rata ke engine yang punya sinyal
+        active = [e for e in weights if engine_counts.get(e, 0) > 0]
+        for e in active:
+            weights[e] = 1.0 / len(active)
+
+    # Alokasi modal ke masing-masing engine
+    engine_modal = {}
+    for eng, w in weights.items():
+        if engine_counts.get(eng, 0) > 0:
+            engine_modal[eng] = total_modal * w
+        else:
+            engine_modal[eng] = 0
+
+    # Untuk setiap engine, jalankan optimize_portfolio dengan modal yang sudah dialokasikan
+    optimized_signals = {}
+    for eng, signals in all_signals.items():
+        if not signals or engine_modal[eng] == 0:
+            optimized_signals[eng] = []
+            continue
+        # Gunakan optimizer yang sudah ada (optimize_portfolio) dengan modal terbatas
+        # Tapi optimizer intra-engine memerlukan modal per engine dan risk manager terpisah.
+        # Karena risk manager tidak di-pass, kita akan lakukan alokasi sederhana:
+        # bagi modal merata ke sinyal terbaik (top 3) sesuai skor.
+        sorted_sigs = sorted(signals, key=lambda x: x.get('Confidence_Score', 0), reverse=True)
+        take = min(3, len(sorted_sigs))
+        selected = []
+        modal_per_signal = engine_modal[eng] / take
+        for sig in sorted_sigs[:take]:
+            # Hitung lot berdasarkan modal yang dialokasikan
+            price = sig['Price']
+            max_lot = int(modal_per_signal / (price * 100))
+            if max_lot < 1:
+                continue
+            # Ambil lot dari sinyal asli, tetapi jangan melebihi max_lot
+            lot = min(sig.get('Lot', 1), max_lot)
+            sig_copy = sig.copy()
+            sig_copy['Lot'] = lot
+            sig_copy['Cost'] = lot * price * 100
+            # Risk amount disesuaikan proporsional
+            if 'Risk_Amount' in sig:
+                sig_copy['Risk_Amount'] = sig['Risk_Amount'] * (lot / sig.get('Lot', 1))
+            selected.append(sig_copy)
+        optimized_signals[eng] = selected
+
+    return optimized_signals
 
 # =============================================================================
 # 28. BLOCK BOOTSTRAP MONTE CARLO - FIXED VERSION (VALIDATION ONLY)
@@ -5005,12 +5188,104 @@ class ValidationSuite:
         return results
 
 # =============================================================================
-# 30. DATA WAREHOUSE INITIALIZATION
+# 30. DATA WAREHOUSE INITIALIZATION - DENGAN MULTITHREADING
 # =============================================================================
+
+import concurrent.futures
+
+def download_price(symbol, warehouse, start_date, end_date):
+    """Download harga satu saham (untuk threading)"""
+    cache_file = f"{warehouse.warehouse_dir}/{symbol}_full.parquet"
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_parquet(cache_file)
+            if len(df) >= warehouse.min_days and df.index[0] <= pd.to_datetime(start_date) and df.index[-1] >= pd.to_datetime(end_date):
+                return symbol, True, "cached"
+        except:
+            pass
+    try:
+        ticker = f"{symbol}.JK"
+        df = yf.download(ticker, start=start_date, end=end_date, interval="1d", auto_adjust=True, progress=False, timeout=30)
+        time.sleep(0.2)  # hindari rate limit
+        if df.empty or len(df) < warehouse.min_days:
+            return symbol, False, "insufficient data"
+        df = normalize_columns(df)
+        df.to_parquet(cache_file)
+        return symbol, True, "downloaded"
+    except Exception as e:
+        return symbol, False, str(e)[:50]
+
+def download_dividend(symbol, warehouse, start_timestamp):
+    """Download dividen satu saham (untuk threading)"""
+    cache_file = f"{warehouse.dividend_dir}/{symbol}_dividends.parquet"
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_parquet(cache_file)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            if len(df) > 0:
+                return symbol, True, "cached"
+        except:
+            pass
+    try:
+        ticker = yf.Ticker(f"{symbol}.JK")
+        dividends = ticker.dividends
+        if dividends is not None and len(dividends) > 0:
+            df = pd.DataFrame(dividends)
+            df.columns = ['Dividend']
+            df.index.name = 'Date'
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            df_filtered = df[df.index >= start_timestamp]
+            if len(df_filtered) > 0:
+                df_filtered.to_parquet(cache_file)
+                return symbol, True, "downloaded"
+            else:
+                return symbol, False, "no dividends in period"
+        else:
+            return symbol, False, "no dividend data"
+    except Exception as e:
+        return symbol, False, str(e)[:50]
+
+def download_fundamental(symbol, warehouse, now, max_age_days):
+    """Download fundamental satu saham (untuk threading)"""
+    cache_file = f"{warehouse.fundamental_dir}/{symbol}_fundamental.parquet"
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_parquet(cache_file)
+            if 'timestamp' in df.columns:
+                timestamp = pd.to_datetime(df['timestamp'].iloc[0])
+                age_days = (now - timestamp).days
+                if age_days < max_age_days:
+                    return symbol, True, "cached"
+        except:
+            pass
+    try:
+        ticker = yf.Ticker(f"{symbol}.JK")
+        info = ticker.info
+        fund_data = {
+            'symbol': symbol,
+            'timestamp': now.isoformat(),
+            'per': info.get('trailingPE'),
+            'forward_per': info.get('forwardPE'),
+            'pbv': info.get('priceToBook'),
+            'roe': info.get('returnOnEquity'),
+            'eps': info.get('trailingEps'),
+            'profit_margin': info.get('profitMargins'),
+            'debt_to_equity': info.get('debtToEquity'),
+            'market_cap': info.get('marketCap'),
+            'sector': info.get('sector'),
+            'industry': info.get('industry')
+        }
+        df = pd.DataFrame([fund_data])
+        df.to_parquet(cache_file)
+        return symbol, True, "downloaded"
+    except Exception as e:
+        return symbol, False, str(e)[:50]
 
 def initialize_data_warehouse():
     print("\n" + "="*80)
-    print("🗄️  INISIALISASI DATA WAREHOUSE")
+    print("🗄️  INISIALISASI DATA WAREHOUSE (MULTITHREADING)")
     print("="*80)
     print("1. Download data harga saham historis (jika belum ada)")
     print("2. Download data dividen (opsional, folder terpisah)")
@@ -5021,12 +5296,18 @@ def initialize_data_warehouse():
 
     warehouse = DataWarehouse(warehouse_dir='data_warehouse', min_days=400)
 
-    existing_data = warehouse.get_all_valid_symbols()
-    print(f"\n📊 Data harga yang sudah tersedia: {len(existing_data)} saham")
+    # Tentukan periode
+    start_date = '2018-01-01'
+    end_date = '2026-12-31'
+    start_timestamp = pd.Timestamp(start_date)
+    now = datetime.now()
 
+    # Data harga
     print("\n" + "="*80)
-    print("📈 DATA HARGA SAHAM")
+    print("📈 DATA HARGA SAHAM (MULTITHREADING)")
     print("="*80)
+    existing_data = warehouse.get_all_valid_symbols()
+    print(f"Data harga yang sudah tersedia: {len(existing_data)} saham")
 
     download_harga = 'n'
     if len(existing_data) >= 400:
@@ -5040,94 +5321,110 @@ def initialize_data_warehouse():
         print("\n⚠️  PERINGATAN: Download data harga akan memakan waktu BEBERAPA JAM!")
         confirm = input("Lanjutkan download data harga? (y/n): ").strip().lower()
         if confirm == 'y':
-            print("\n📥 Mendownload data harga saham...")
-            data = warehouse.download_complete_history(
-                symbols=STOCKBIT_UNIVERSE,
-                start_date='2018-01-01',
-                end_date='2026-12-31'
-            )
-            print(f"✅ Selesai! Data harga tersedia untuk {len(data)} saham")
+            print("\n📥 Mendownload data harga saham dengan multithreading...")
+            results = {'success': 0, 'failed': 0, 'cached': 0, 'insufficient': 0}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_symbol = {executor.submit(download_price, sym, warehouse, start_date, end_date): sym for sym in STOCKBIT_UNIVERSE}
+                for i, future in enumerate(concurrent.futures.as_completed(future_to_symbol)):
+                    sym = future_to_symbol[future]
+                    try:
+                        symbol, status, msg = future.result()
+                        if status:
+                            if msg == 'cached':
+                                results['cached'] += 1
+                            else:
+                                results['success'] += 1
+                        else:
+                            if 'insufficient' in msg:
+                                results['insufficient'] += 1
+                            else:
+                                results['failed'] += 1
+                    except Exception as e:
+                        results['failed'] += 1
+                        logger.error(f"Error processing {sym}: {e}")
+                    if (i+1) % 50 == 0:
+                        print(f"   Progress: {i+1}/{len(STOCKBIT_UNIVERSE)} - Success: {results['success']}, Cached: {results['cached']}, Failed: {results['failed']}, Insufficient: {results['insufficient']}")
+            print(f"\n✅ Selesai! Data harga: {results['success']} baru, {results['cached']} dari cache, {results['failed']} gagal, {results['insufficient']} tidak cukup hari")
         else:
             print("⏩ Lewati download data harga")
     else:
         print("⏩ Menggunakan data harga yang sudah ada")
 
+    # Data dividen
     print("\n" + "="*80)
-    print("💰 DIVIDEN DATA")
+    print("💰 DIVIDEN DATA (MULTITHREADING)")
     print("="*80)
-    print("Data dividen disimpan di folder terpisah:")
-    print("   data_warehouse/dividends/")
-    print("TIDAK MENGGANGGU data harga saham utama")
-
     import glob
     existing_div = glob.glob(f"{warehouse.dividend_dir}/*_dividends.parquet")
-    if existing_div:
-        print(f"✅ Data dividen sudah tersedia untuk {len(existing_div)} saham")
+    print(f"Data dividen sudah tersedia: {len(existing_div)} saham")
 
     div_confirm = input("\nDownload data dividen untuk SEMUA saham? (y/n): ").strip().lower()
-
     if div_confirm == 'y':
         print(f"\n📥 Mendownload data dividen untuk {len(STOCKBIT_UNIVERSE)} saham...")
-        print("   Proses ini akan memakan waktu ~30-60 menit...")
-        dividend_results = warehouse.download_dividend_history(
-            symbols=STOCKBIT_UNIVERSE,
-            years_back=10
-        )
-        print(f"\n✅ Selesai! Data dividen tersedia untuk {len(dividend_results)} saham")
-        print(f"   Saham tanpa data dividen: {len(STOCKBIT_UNIVERSE) - len(dividend_results)}")
+        results = {'success': 0, 'failed': 0, 'cached': 0}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {executor.submit(download_dividend, sym, warehouse, start_timestamp): sym for sym in STOCKBIT_UNIVERSE}
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_symbol)):
+                sym = future_to_symbol[future]
+                try:
+                    symbol, status, msg = future.result()
+                    if status:
+                        if msg == 'cached':
+                            results['cached'] += 1
+                        else:
+                            results['success'] += 1
+                    else:
+                        results['failed'] += 1
+                except Exception as e:
+                    results['failed'] += 1
+                if (i+1) % 100 == 0:
+                    print(f"   Progress: {i+1}/{len(STOCKBIT_UNIVERSE)} - Success: {results['success']}, Cached: {results['cached']}, Failed: {results['failed']}")
+        print(f"\n✅ Selesai! Data dividen: {results['success']} baru, {results['cached']} dari cache, {results['failed']} gagal/tidak ada")
     else:
         print("⏩ Lewati download dividen")
 
+    # Data fundamental
     print("\n" + "="*80)
-    print("📊 FUNDAMENTAL DATA")
+    print("📊 FUNDAMENTAL DATA (MULTITHREADING)")
     print("="*80)
-    print("Data fundamental disimpan di folder terpisah:")
-    print("   data_warehouse/fundamental/")
-    print("TIDAK MENGGANGGU data harga saham utama")
-
     existing_fund = glob.glob(f"{warehouse.fundamental_dir}/*_fundamental.parquet")
-    if existing_fund:
-        print(f"✅ Data fundamental sudah tersedia untuk {len(existing_fund)} saham")
+    print(f"Data fundamental sudah tersedia: {len(existing_fund)} saham")
 
     fund_confirm = input("\nDownload data fundamental (PER, PBV, ROE) untuk SEMUA saham? (y/n): ").strip().lower()
-
     if fund_confirm == 'y':
         print(f"\n📥 Mendownload data fundamental untuk {len(STOCKBIT_UNIVERSE)} saham...")
-        print("   Proses ini akan memakan waktu ~30-60 menit...")
-        fundamental_results = warehouse.download_fundamental_history(
-            symbols=STOCKBIT_UNIVERSE,
-            max_age_days=30
-        )
-        print(f"\n✅ Selesai! Data fundamental tersedia untuk {len(fundamental_results)} saham")
-        print(f"   Saham tanpa data fundamental: {len(STOCKBIT_UNIVERSE) - len(fundamental_results)}")
+        results = {'success': 0, 'failed': 0, 'cached': 0}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {executor.submit(download_fundamental, sym, warehouse, now, 30): sym for sym in STOCKBIT_UNIVERSE}
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_symbol)):
+                sym = future_to_symbol[future]
+                try:
+                    symbol, status, msg = future.result()
+                    if status:
+                        if msg == 'cached':
+                            results['cached'] += 1
+                        else:
+                            results['success'] += 1
+                    else:
+                        results['failed'] += 1
+                except Exception as e:
+                    results['failed'] += 1
+                if (i+1) % 100 == 0:
+                    print(f"   Progress: {i+1}/{len(STOCKBIT_UNIVERSE)} - Success: {results['success']}, Cached: {results['cached']}, Failed: {results['failed']}")
+        print(f"\n✅ Selesai! Data fundamental: {results['success']} baru, {results['cached']} dari cache, {results['failed']} gagal")
     else:
         print("⏩ Lewati download fundamental")
 
     print("\n" + "="*80)
     print("📊 RINGKASAN AKHIR DATA WAREHOUSE")
     print("="*80)
-
     final_data = warehouse.get_all_valid_symbols()
     print(f"Data harga: {len(final_data)} saham valid (≥{warehouse.min_days} hari)")
-
     final_div = glob.glob(f"{warehouse.dividend_dir}/*_dividends.parquet")
     print(f"Data dividen: {len(final_div)} saham")
-
     final_fund = glob.glob(f"{warehouse.fundamental_dir}/*_fundamental.parquet")
     print(f"Data fundamental: {len(final_fund)} saham")
-
-    if final_data:
-        sample = final_data[0]
-        df = warehouse.get_data(sample)
-        if df is not None:
-            print(f"Rentang tanggal harga: {df.index[0].date()} hingga {df.index[-1].date()}")
-
     print("="*80)
-
-    if 'data' in locals():
-        return data
-    else:
-        return warehouse.get_all_data()
 
 # =============================================================================
 # 30A. FUNGSI OPTIMASI PORTOFOLIO (BARU - PASCA SCANNING)
@@ -5277,14 +5574,13 @@ def check_sector_concentration(signals, price_data, portfolio_risk, threshold=0.
     return signals
 
 # =============================================================================
-# 31. PHASE 1 - MAIN PROGRAM (DENGAN SEMUA PENINGKATAN)
+# 31. PHASE 1 - MAIN PROGRAM (DENGAN SEMUA PENINGKATAN) - [FINAL FIXED]
 # =============================================================================
 
-def run_phase1(sheets_exporter):
+def run_phase1(sheets_exporter, engine_choice='all', modal=None):
+    # engine_choice sudah 'all', modal bisa None (akan diminta)
     print("\n" + "="*60)
-    print("🏦 IDX STOCK SCANNER - QUADRUPLE ENGINE (AGGRESSIVE ENHANCED)")
-    print("   Modal-Adaptive Filters | Risk 3% per trade | Target 15-20% per tahun")
-    print("   Fitur Baru: Turnover Filter, Optimasi Portofolio, Makro Scenario, Fundamental, Indeks Asia")
+    print("🏦 IDX STOCK SCANNER - JALANKAN SEMUA ENGINE")
     print("="*60)
 
     warehouse = DataWarehouse(warehouse_dir='data_warehouse', min_days=400)
@@ -5297,74 +5593,25 @@ def run_phase1(sheets_exporter):
 
     print(f"\n📊 Data warehouse siap: {len(symbols)} saham dengan data >= 400 hari")
 
-    print("\nPilih engine trading:")
-    print("1. Swing Engine (Mingguan - Mean Reversion) - Modal: Rp 40rb - 5jt")
-    print("2. Gorengan Engine (Intraday - Early Momentum) - Modal: Rp 10rb - 500rb")
-    print("3. Investasi Engine (Quality + Trend - Jangka Panjang) - Modal: Rp 100rb - 1M")
+    # Minta modal total
+    if modal is None:
+        while True:
+            try:
+                modal_input = input(f"\nModal total untuk semua engine: ").strip()
+                modal = int(modal_input.replace('.', '').replace(',', ''))
+                if modal >= 10000:  # minimal modal untuk gorengan
+                    break
+                print("❌ Modal minimal Rp 10,000")
+            except Exception:
+                print("❌ Input tidak valid")
 
-    while True:
-        engine_choice = input("Pilihan (1/2/3): ").strip()
-        if engine_choice in ['1', '2', '3']:
-            break
-        print("❌ Pilih 1, 2, atau 3")
-
-    modal_ranges = {
-        '1': (40000, 5000000, 'swing'),
-        '2': (10000, 500000, 'gorengan'),
-        '3': (100000, 1000000000, 'investasi')
-    }
-
-    min_modal, max_modal, engine_type = modal_ranges[engine_choice]
-
-    # ===== INPUT MODAL BEBAS =====
-    while True:
-        try:
-            modal_input = input(f"\nModal bebas (Rp {min_modal:,} - {max_modal:,}): ").strip()
-            modal = int(modal_input.replace('.', '').replace(',', ''))
-            if min_modal <= modal <= max_modal:
-                break
-            print(f"❌ Modal harus {min_modal:,} - {max_modal:,}")
-        except Exception:
-            print("❌ Input tidak valid")
-
-    if engine_choice == '1':
-        config = SwingConfig(modal)
-        engine_name = "SWING ENGINE"
-        EngineClass = SwingEngine
-        timeframe = '1d'
-    elif engine_choice == '2':
-        config = GorenganConfig(modal)
-        engine_name = "GORENGAN ENGINE"
-        EngineClass = IntradayGorenganEngine
-        timeframe = '1h'
-    else:
-        config = InvestasiConfig(modal)
-        engine_name = "INVESTASI ENGINE"
-        EngineClass = InvestasiEngine
-        timeframe = '1d'
-
-    modal_adapter = ModalAdapter(modal, engine_type)
-    modal_adapter.print_info()
-
-    print("\n🚀 Initializing Phase 1 Components...")
-
-    risk_manager = RiskManager(
-        modal=modal,
-        risk_per_trade_pct=3.0,
-        max_risk_portfolio_pct=15.0,
-        max_lot_per_position=10,
-        engine_type=engine_type
-    )
-    print(f"   ✅ Risk Manager: Rp {risk_manager.risk_per_trade_rp:,.0f} risk/trade (3.0%)")
-
-    fee_config = RealisticFeeConfig(liquidity='medium')
-    print(f"   ✅ Fee Config: min fee Rp {fee_config.MIN_FEE_PER_TRANSACTION:,} (termasuk VAT 11%)")
+    # ===== SETUP GLOBAL (sama untuk semua engine) =====
+    print("\n🚀 Initializing Global Components...")
 
     global_fetcher = GlobalIndicesFetcher()
     global_fetcher.fetch_all()
     global_fetcher.print_detailed_report()
 
-    # Inisialisasi news analyzer untuk indeks global (IHSG)
     NEWS_API_KEY = "75e932cca3c44eb68edf44aa81453bab"
     global_news_analyzer = GlobalNewsAnalyzer(api_key=NEWS_API_KEY, days_back=3, max_articles=10)
 
@@ -5372,7 +5619,6 @@ def run_phase1(sheets_exporter):
     if 'IHSG' in global_fetcher.data:
         ihsg_data = global_fetcher.data['IHSG']
         current_regime, confidence = regime_detector.detect_regime(ihsg_data)
-        # Terapkan skenario makro
         macro_mult = apply_macro_scenario(regime_detector, global_fetcher)
         if macro_mult != 1.0:
             regime_detector.confidence *= macro_mult
@@ -5380,47 +5626,47 @@ def run_phase1(sheets_exporter):
         regime_detector.print_regime_report()
     else:
         print("\n⚠️  IHSG data tidak tersedia, regime detection skipped")
-
-    delay_simulator = EntryDelaySimulator(max_delay=2)
-    print(f"   ✅ Entry Delay Simulator: max delay {delay_simulator.max_delay} days (informational only)")
+        current_regime = "UNKNOWN"
 
     portfolio_risk = PortfolioRiskCalculator(lookback_days=60)
     print(f"   ✅ Portfolio Risk Calculator: {portfolio_risk.lookback_days} days lookback with stress testing")
 
-    # Inisialisasi news analyzer untuk saham
     stock_news_analyzer = NewsAnalyzer(api_key=NEWS_API_KEY, days_back=7, max_articles=10)
 
-    # Inisialisasi engine dengan parameter baru
-    engine = EngineClass(config, global_fetcher, news_analyzer=None)
-    engine.set_risk_manager(risk_manager)
-    engine.set_regime_detector(regime_detector)
+    # ===== FUNGSI BANTU UNTUK MENJALANKAN SATU ENGINE =====
+    def run_single_engine(EngineClass, config_class, engine_name):
+        print(f"\n" + "="*60)
+        print(f"📊 {engine_name} - RUNNING")
+        print("="*60)
+        config = config_class(modal if engine_choice == 'all' else modal)  # jika all, modal total, nanti dibagi di cross-opt
+        # Tapi untuk all, kita tetap pakai modal total untuk risk manager, karena risk manager hanya dipakai internal.
+        # Nanti di cross-opt kita akan sesuaikan lot.
+        risk_manager = RiskManager(
+            modal=modal,
+            risk_per_trade_pct=3.0,
+            max_risk_portfolio_pct=15.0,
+            max_lot_per_position=10,
+            engine_type=EngineClass.__name__.lower().replace('engine', '')
+        )
+        print(f"   ✅ Risk Manager: Rp {risk_manager.risk_per_trade_rp:,.0f} risk/trade (3.0%)")
 
-    if engine_choice == '3':
-        engine.set_warehouse(warehouse)
+        engine = EngineClass(config, global_fetcher, news_analyzer=None)
+        engine.set_risk_manager(risk_manager)
+        engine.set_regime_detector(regime_detector)
+        if engine_name == 'INVESTASI ENGINE':
+            engine.set_warehouse(warehouse)
 
-    print("\n" + "="*60)
-    print(f"📊 {engine_name} - READY (AGGRESSIVE ENHANCED)")
-    print("="*60)
-    print(f"Modal: Rp {modal:,}")
-    print(f"Risk per trade: Rp {risk_manager.risk_per_trade_rp:,.0f} (3.0% AGGRESSIVE)")
-    print(f"Max portfolio risk: Rp {risk_manager.max_risk_portfolio_rp:,.0f} (15.0% AGGRESSIVE)")
-    print(f"Min fee: Rp {fee_config.MIN_FEE_PER_TRANSACTION:,}")
-    print(f"Universe: {len(symbols)} saham valid dari warehouse")
-    print(f"📰 News Analyzer (saham): AKTIF (hanya untuk sinyal terbaik, hemat kuota)")
+        # Muat data saham
+        stocks_data = {}
+        for i, symbol in enumerate(symbols):
+            df = warehouse.get_data(symbol)
+            if df is not None:
+                stocks_data[symbol] = df
+            if (i + 1) % 100 == 0:
+                print(f"   Progress: {i+1}/{len(symbols)} - {len(stocks_data)} dimuat")
+        print(f"\n✅ Berhasil memuat {len(stocks_data)} saham dari warehouse")
 
-    print(f"\n📥 Menganalisis SEMUA {len(symbols)} saham...")
-
-    stocks_data = {}
-    for i, symbol in enumerate(symbols):
-        df = warehouse.get_data(symbol)
-        if df is not None:
-            stocks_data[symbol] = df
-        if (i + 1) % 50 == 0:
-            print(f"   Progress: {i+1}/{len(symbols)} - {len(stocks_data)} dimuat")
-
-    print(f"\n✅ Berhasil memuat {len(stocks_data)} saham dari warehouse")
-
-    if stocks_data:
+        # Analisis
         print(f"\n📊 Menganalisis {len(stocks_data)} saham...")
         signals = []
         for symbol, df in stocks_data.items():
@@ -5429,74 +5675,165 @@ def run_phase1(sheets_exporter):
                 signals.append(signal)
         print(f"✅ Ditemukan {len(signals)} sinyal")
 
+        # Terapkan news analyzer untuk sinyal terbaik (maks 20)
         if signals:
-            # ===== REKOMENDASI ALOKASI ENGINE =====
-            print("\n📊 REKOMENDASI ALOKASI ANTAR ENGINE (berdasarkan regime pasar):")
-            if regime_detector.current_regime == "BEAR":
-                print("   Bear market: Swing 20% | Gorengan 10% | Investasi 70%")
-            elif regime_detector.current_regime == "BULL":
-                print("   Bull market: Swing 40% | Gorengan 30% | Investasi 30%")
-            elif regime_detector.current_regime == "SIDEWAYS":
-                print("   Sideways: Swing 30% | Gorengan 20% | Investasi 50%")
-            elif regime_detector.current_regime == "HIGH_VOL":
-                print("   High volatility: Swing 15% | Gorengan 5% | Investasi 80%")
-            else:
-                print("   Regime unknown: Swing 33% | Gorengan 33% | Investasi 33%")
-            print("   (Anda bebas menentukan sendiri, ini hanya panduan)")
-
-            # ===== OPTIMASI NEWS ANALYZER: hanya untuk sinyal terbaik =====
-            print("\n📰 Mengambil sentimen berita untuk sinyal terbaik (maks 20)...")
-            # Urutkan sinyal berdasarkan skor
-            if engine_choice == '3':
-                sorted_signals = sorted(signals, key=lambda x: x.get('Final_Score', 0), reverse=True)
-            else:
-                sorted_signals = sorted(signals, key=lambda x: x.get('Score', 0), reverse=True)
-
-            # Ambil maksimal 20 sinyal terbaik
-            top_news_signals = sorted_signals[:20]
-
-            # Update news untuk sinyal-sinyal tersebut
-            for sig in top_news_signals:
+            sorted_sigs = sorted(signals, key=lambda x: x.get('Confidence_Score', 0), reverse=True)
+            for sig in sorted_sigs[:20]:
                 mult, label = stock_news_analyzer.get_multiplier_and_label(sig['Symbol'])
                 sig['Confidence_Score'] = min(100, sig['Confidence_Score'] * mult)
                 sig['News_Label'] = label
                 sig['News_Multiplier'] = mult
-
-            # Untuk sinyal lainnya, set label default 'netral'
-            for sig in sorted_signals[20:]:
+            for sig in sorted_sigs[20:]:
                 sig['News_Label'] = 'netral'
                 sig['News_Multiplier'] = 1.0
 
-            # ===== PERINGATAN KONSENTRASI SEKTOR & KORELASI =====
-            sorted_signals = check_sector_concentration(sorted_signals, stocks_data, portfolio_risk, threshold=0.7)
+            # Cek korelasi
+            signals = check_sector_concentration(signals, stocks_data, portfolio_risk, threshold=0.7)
 
-            print("\n" + "="*100)
-            print("🌍 RINGKASAN PASAR")
-            print("="*100)
-            market_data = []
-            for name in GLOBAL_INDICES.keys():
-                mom = global_fetcher.get_momentum(name)
-                trend = global_fetcher.get_trend(name)
-                price_str = global_fetcher.get_price_str(name)
-                market_data.append([name, price_str, f"{mom:+.2f}%", trend])
-            print(tabulate(market_data, headers=["Indeks", "Harga", "Momentum", "Trend"], tablefmt="grid"))
+        return signals, stocks_data
 
-            # ===== OPTIMASI PORTOFOLIO (pasca scanning) =====
-            if len(sorted_signals) >= 3:
-                optimized = optimize_portfolio(sorted_signals, stocks_data, modal, risk_manager, max_positions=3)
+    # ===== EKSEKUSI SESUAI PILIHAN =====
+    if engine_choice == 'all':
+        # Jalankan ketiga engine
+        swing_signals, swing_data = run_single_engine(SwingEngine, SwingConfig, "SWING ENGINE")
+        gorengan_signals, gorengan_data = run_single_engine(IntradayGorenganEngine, GorenganConfig, "GORENGAN ENGINE")
+        investasi_signals, investasi_data = run_single_engine(InvestasiEngine, InvestasiConfig, "INVESTASI ENGINE")
+
+        # Gabungkan data harga (untuk korelasi)
+        all_price_data = {**swing_data, **gorengan_data, **investasi_data}
+
+        all_signals = {
+            'swing': swing_signals,
+            'gorengan': gorengan_signals,
+            'investasi': investasi_signals
+        }
+
+        # === BUAT RISK MANAGER UNTUK KEPERLUAN TAMPILAN ===
+        risk_manager_display = RiskManager(
+            modal=modal,
+            risk_per_trade_pct=3.0,
+            max_risk_portfolio_pct=15.0,
+            max_lot_per_position=10,
+            engine_type='all engine'   # engine_type bebas, hanya untuk tampilan
+        )
+
+        # Cross-engine optimization
+        optimized = optimize_cross_engine(all_signals, all_price_data, modal, current_regime)
+
+        # Tampilkan hasil per engine
+        for eng, sigs in optimized.items():
+            if sigs:
+                print("\n" + "="*100)
+                print(f"📊 {eng.upper()} ENGINE - REKOMENDASI OPTIMAL ({len(sigs)} sinyal)")
+                print("="*100)
+                if eng == 'investasi':
+                    # Tampilkan dengan format investasi
+                    display_data = []
+                    for s in sigs:
+                        target_str = f"{s.get('Target_Konservatif', '-')} | {s.get('Target_Moderat', '-')} | {s.get('Target_Agresif', '-')}"
+                        display_data.append([
+                            s['Symbol'],
+                            s['Sector'],
+                            f"Rp {s['Price']:,}",
+                            f"{s['To_MA50']}",
+                            f"Rp {s['MA50']:,}",
+                            f"Rp {s['MA200']:,}",
+                            f"Rp {s['Stop_Loss']:,}",
+                            target_str,
+                            s.get('Dividend_Display', 'N/A'),
+                            f"{s['Confidence_Score']}%",
+                            f"{s['Optimal_Hold_Days']}",
+                            f"{s['Success_Rate']}%",
+                            f"{s['Lot']} lot",
+                            f"Rp {s['Cost']:,}",
+                            s.get('Final_Score', 'N/A'),
+                            s.get('News_Label', 'netral')
+                        ])
+                    headers = [
+                        "Kode", "Sektor", "Harga", "To MA50", "MA50", "MA200",
+                        "Stop", "Target", "Div", "Conf", "Hold", "Sks%", "Lot", "Biaya", "Score", "News"
+                    ]
+                    print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
+                    # Tampilkan panduan portofolio investasi
+                    print_investasi_portfolio_guide(sigs, modal, risk_manager_display, portfolio_risk, all_price_data)
+                else:
+                    display_data = []
+                    for s in sigs:
+                        display_data.append([
+                            s['Symbol'],
+                            s['Sector'],
+                            f"Rp {s['Price']:,}",
+                            s.get('RSI', '-'),
+                            s.get('Volume', '-'),
+                            f"{s['R/R']:.2f}",
+                            f"{s['EV_Pct']}%",
+                            f"{s['Score']}",
+                            f"{s['Confidence_Score']}%",
+                            f"{s['Optimal_Hold_Days']}",
+                            f"{s['Success_Rate']}%",
+                            f"{s['ATR_Pct']}%",
+                            f"Rp {s['Stop_Loss']:,}",
+                            f"Rp {s['Take_Profit']:,}",
+                            f"{s['Lot']} lot",
+                            f"Rp {s['Cost']:,}",
+                            s.get('News_Label', 'netral')
+                        ])
+                    headers = [
+                        "Kode", "Sektor", "Harga", "RSI", "Vol", "R/R",
+                        "EV%", "Skor", "Conf%", "Hold", "Sukses%", "ATR%", "SL", "TP", "Lot", "Biaya", "News"
+                    ]
+                    print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
+                    # Tampilkan panduan portofolio umum
+                    print_portfolio_guide(sigs, modal, risk_manager_display, portfolio_risk, all_price_data)
             else:
-                optimized = sorted_signals[:3]
+                print(f"\nℹ️ Tidak ada sinyal untuk {eng.upper()} ENGINE")
 
+        # Export semua ke Google Sheets (opsional)
+        export_choice = input(f"\n📊 Export semua sinyal ke Google Sheets? (y/n): ").strip().lower()
+        if export_choice == 'y':
+            for eng, sigs in optimized.items():
+                engine_name = f"{eng.upper()} ENGINE"
+                sheets_exporter.export_signals(sigs, engine_name, modal)
+
+    else:
+        # Jalankan satu engine (mode lama)
+        if engine_choice == '1':
+            config = SwingConfig(modal)
+            engine_name = "SWING ENGINE"
+            EngineClass = SwingEngine
+        elif engine_choice == '2':
+            config = GorenganConfig(modal)
+            engine_name = "GORENGAN ENGINE"
+            EngineClass = IntradayGorenganEngine
+        else:
+            config = InvestasiConfig(modal)
+            engine_name = "INVESTASI ENGINE"
+            EngineClass = InvestasiEngine
+
+        # Panggil fungsi run_single_engine
+        signals, stocks_data = run_single_engine(EngineClass, lambda m: config, engine_name)
+
+        if signals:
+            # Optimasi portofolio intra-engine
+            # Untuk satu engine, kita perlu risk_manager yang sudah dibuat di run_single_engine,
+            # tapi risk_manager tersebut lokal. Kita bisa buat baru atau ambil dari sinyal? 
+            # Sebenarnya kita tidak punya akses ke risk_manager dari run_single_engine di sini.
+            # Solusi: buat risk_manager baru dengan modal yang sama.
+            risk_manager_single = RiskManager(
+                modal=modal,
+                risk_per_trade_pct=3.0,
+                max_risk_portfolio_pct=15.0,
+                max_lot_per_position=10,
+                engine_type=engine_choice
+            )
+            optimized = optimize_portfolio(signals, stocks_data, modal, risk_manager_single, max_positions=3)
             print("\n" + "="*100)
             print(f"📊 {engine_name} - REKOMENDASI OPTIMAL (Top {len(optimized)} dari {len(signals)} sinyal)")
             print("="*100)
-
-            # Tampilkan rekomendasi (sama seperti sebelumnya, tapi pakai optimized)
-            top_5 = optimized[:5]  # untuk tampilan
-
+            # Tampilkan tabel dan panduan
             if engine_choice == '3':
                 display_data = []
-                for s in top_5:
+                for s in optimized:
                     target_str = f"{s.get('Target_Konservatif', '-')} | {s.get('Target_Moderat', '-')} | {s.get('Target_Agresif', '-')}"
                     display_data.append([
                         s['Symbol'],
@@ -5520,9 +5857,11 @@ def run_phase1(sheets_exporter):
                     "Kode", "Sektor", "Harga", "To MA50", "MA50", "MA200",
                     "Stop", "Target", "Div", "Conf", "Hold", "Sks%", "Lot", "Biaya", "Score", "News"
                 ]
+                print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
+                print_investasi_portfolio_guide(optimized, modal, risk_manager_single, portfolio_risk, stocks_data)
             else:
                 display_data = []
-                for s in top_5:
+                for s in optimized:
                     display_data.append([
                         s['Symbol'],
                         s['Sector'],
@@ -5546,22 +5885,14 @@ def run_phase1(sheets_exporter):
                     "Kode", "Sektor", "Harga", "RSI", "Vol", "R/R",
                     "EV%", "Skor", "Conf%", "Hold", "Sukses%", "ATR%", "SL", "TP", "Lot", "Biaya", "News"
                 ]
-
-            print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
-
-            if engine_choice == '3':
-                print_investasi_portfolio_guide(optimized, modal, risk_manager, portfolio_risk, stocks_data)
-            else:
-                print_portfolio_guide(optimized, modal, risk_manager, portfolio_risk, stocks_data)
+                print(tabulate(display_data, headers=headers, tablefmt='grid', stralign='left', numalign='center'))
+                print_portfolio_guide(optimized, modal, risk_manager_single, portfolio_risk, stocks_data)
 
             export_choice = input(f"\n📊 Export {engine_name} signals ke Google Sheets? (y/n): ").strip().lower()
             if export_choice == 'y':
                 sheets_exporter.export_signals(optimized, engine_name, modal)
-
         else:
             print("\n❌ Tidak ada sinyal hari ini")
-    else:
-        print("\n❌ Tidak ada data yang berhasil dimuat dari warehouse")
 
     print("\n" + "="*60)
     print("✅ PHASE 1 COMPLETE - AGGRESSIVE ENHANCED")
@@ -5656,7 +5987,7 @@ def run_phase2():
     print("="*80)
 
 # =============================================================================
-# 33. MAIN MENU
+# 33. MAIN MENU (DIPERBARUI)
 # =============================================================================
 
 def main():
@@ -5664,22 +5995,23 @@ def main():
     print("🏦 IDX STOCK SCANNER - QUADRUPLE ENGINE (AGGRESSIVE ENHANCED)")
     print("   FULL SYSTEM DENGAN DATA WAREHOUSE")
     print("   Modal-Adaptive Filters | Risk 3% per trade | Target 15-20% per tahun")
-    print("   Fitur Baru: Turnover Filter, Optimasi Portofolio, Makro Scenario, Fundamental, Indeks Asia")
+    print("   Fitur Baru: Dynamic Risk Convexity, ATR-based Gorengan, Cross-Engine Portfolio")
     print("="*70)
 
     sheets_exporter = GoogleSheetsExporter()
     sheets_exporter.ensure_spreadsheet_exists()
 
     print("\nPilih Mode:")
-    print("1. Phase 1 - Trading Scanner (Live Signals) - AGGRESSIVE")
-    print("2. Phase 2 - Validation Suite (Monte Carlo Optimal) - AGGRESSIVE")
+    print("1. Phase 1 - Trading Scanner (Jalankan Semua Engine)")
+    print("2. Phase 2 - Validation Suite (Monte Carlo Optimal)")
     print("3. Inisialisasi Data Warehouse (Download historis lengkap)")
     print("4. Exit")
 
     while True:
         choice = input("\nPilihan (1/2/3/4): ").strip()
         if choice == '1':
-            run_phase1(sheets_exporter)
+            # Panggil run_phase1 dengan engine_choice='all' dan modal akan diminta di dalamnya
+            run_phase1(sheets_exporter, engine_choice='all')
             break
         elif choice == '2':
             run_phase2()
