@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """IDX Stock Scanner - Medallion Style V2.0
 ================================================================================
-VERSI 3.0 - LIGHTWEIGHT QUANT MODELS (Fast & Efficient for Google Colab Free)
+VERSI 2.0 - LIGHTWEIGHT QUANT MODELS (Fast & Efficient for Google Colab Free)
 ================================================================================
 Model yang diintegrasikan (BARU - Ringan):
   1. Kelly Criterion (1/4 Fractional) - Position Sizing per signal quality
